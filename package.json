@@ -1,0 +1,36 @@
+{
+  "name": "aviator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Multi-agent coding cockpit that turns ClickUp tasks or prompts into reviewed, unpushed code changes using the Claude Agent SDK.",
+  "scripts": {
+    "dev": "next dev -p 3210",
+    "demo": "node scripts/demo.mjs",
+    "build": "next build",
+    "start": "next start -p 3210",
+    "typecheck": "tsc --noEmit",
+    "login": "node scripts/claude.mjs auth login --claudeai",
+    "auth:status": "node scripts/claude.mjs auth status",
+    "setup-token": "node scripts/claude.mjs setup-token"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.310",
+    "next": "^16.4.3",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "typescript": "^7.0.2"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DHIMANvivek/aviator"
+  }
+}

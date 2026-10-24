@@ -1,0 +1,10 @@
+node_modules/
+.next/
+.aviator/
+.env*.local
+.env
+next-env.d.ts
+*.tsbuildinfo
+.aviator-demo/
+.next-demo/
+.claude/
