@@ -2,7 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import { runDir } from "./store";
-import type { Actor, AgentName, AviatorEvent, EventBody, PlanUsage } from "./types";
+import type { Actor, AviatorEvent, EventBody, ImageInput, PlanUsage } from "./types";
+
+export type PendingMessage = { text: string; images?: ImageInput[] };
 
 // In-process state for live runs: the event log each browser tab streams from,
 // and the hooks the HTTP routes use to answer questions, approve plans, steer
@@ -17,9 +19,9 @@ export type LiveRun = {
   answer?: (text: string) => void;
   decide?: (decision: ApprovalDecision) => void;
   /** Agents currently running, keyed by name: push a user message into their session. */
-  inboxes: Map<AgentName, (text: string) => boolean>;
+  inboxes: Map<string, (text: string, images?: ImageInput[]) => boolean>;
   /** Messages for agents that weren't running when they arrived; delivered on their next turn. */
-  pending: Map<AgentName, string[]>;
+  pending: Map<string, PendingMessage[]>;
 };
 
 type Runtime = {
@@ -95,19 +97,19 @@ export function unregisterLive(runId: string) {
   rt.live.delete(runId);
 }
 
-/** Deliver a message to an agent now if it is running, otherwise queue it for its next turn. */
-export function deliver(runId: string, to: AgentName, text: string): "now" | "queued" | "no-run" {
+/** Deliver a message (and any screenshots) to an agent now if it is running, otherwise queue it. */
+export function deliver(runId: string, to: string, text: string, images?: ImageInput[]): "now" | "queued" | "no-run" {
   const live = rt.live.get(runId);
   if (!live) return "no-run";
   const push = live.inboxes.get(to);
-  if (push && push(text)) return "now";
+  if (push && push(text, images)) return "now";
   const queue = live.pending.get(to) ?? [];
-  queue.push(text);
+  queue.push({ text, images });
   live.pending.set(to, queue);
   return "queued";
 }
 
-export function takePending(runId: string, agent: AgentName): string[] {
+export function takePending(runId: string, agent: string): PendingMessage[] {
   const live = rt.live.get(runId);
   const queue = live?.pending.get(agent) ?? [];
   live?.pending.delete(agent);

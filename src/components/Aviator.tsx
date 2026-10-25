@@ -13,10 +13,15 @@ import {
   VERBS,
   type RunSummary,
 } from "@/lib/client";
-import { AGENTS, type AppStatus, type AviatorEvent, type Project, type Run } from "@/lib/types";
+import { AGENTS, type AppStatus, type AviatorEvent, type ImageInput, type Project, type Run } from "@/lib/types";
 import { Composer, COMMANDS, type Activity, type ComposerHandle } from "./Composer";
 import { ProjectDialog } from "./ProjectDialog";
 import { Sidebar } from "./Sidebar";
+import { AgentsPage } from "./AgentsPage";
+import { ConnectionsPage } from "./ConnectionsPage";
+
+type Page = "agents" | "connections";
+import { matchingPreset, PRESETS, type AgentSettings } from "@/lib/agentPresets";
 import { SignInDialog } from "./SignInDialog";
 import { SidePanel } from "./SidePanel";
 import { Transcript, type Filter } from "./Transcript";
@@ -42,6 +47,8 @@ export function Aviator() {
   const [notice, setNotice] = useState<Notice>(null);
   const [showHelp, setShowHelp] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
+  const [page, setPage] = useState<Page | null>(null);
+  const [agentSettings, setAgentSettings] = useState<AgentSettings | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const composer = useRef<ComposerHandle>(null);
   const scroller = useRef<HTMLDivElement>(null);
@@ -49,6 +56,11 @@ export function Aviator() {
 
   const project = projects.find((p) => p.id === projectId) ?? null;
   const derived = useMemo(() => derive(events), [events]);
+  /** Your custom agents (and on-demand helpers) that appeared in this run, for the filter chips. */
+  const customActors = useMemo(
+    () => [...new Set(events.map((e) => e.actor))].filter((a) => !(AGENTS as readonly string[]).includes(a) && a !== "orchestrator" && a !== "user"),
+    [events],
+  );
   const runStatus = derived.status ?? run?.status;
   const active = !!runId && !!runStatus && !FINAL.includes(runStatus);
   // Runs saved before error codes existed are recognized by their message.
@@ -81,8 +93,15 @@ export function Aviator() {
       })
       .catch(() => {});
     void loadRuns();
-    setRunId(runFromHash());
-    const onHash = () => setRunId(runFromHash());
+    api<{ settings: AgentSettings }>("/api/agents")
+      .then((r) => setAgentSettings(r.settings))
+      .catch(() => {});
+    const onHash = () => {
+      const h = window.location.hash.slice(1);
+      setPage(h === "agents" || h === "connections" ? h : null);
+      setRunId(runFromHash());
+    };
+    onHash();
     window.addEventListener("hashchange", onHash);
     const poll = setInterval(loadRuns, 5000);
     return () => {
@@ -99,8 +118,16 @@ export function Aviator() {
     setRunId(id);
     setFilter("all");
     setShowHelp(false);
+    setPage(null);
     const hash = id ? `#${id}` : "";
     if (window.location.hash !== hash) history.replaceState(null, "", hash || window.location.pathname);
+  }, []);
+
+  const openPage = useCallback((which: Page) => {
+    setPage(which);
+    setShowHelp(false);
+    setRunId(null);
+    if (window.location.hash !== `#${which}`) history.replaceState(null, "", `#${which}`);
   }, []);
 
   // Live event stream for the selected run (replays history, then streams).
@@ -148,13 +175,13 @@ export function Aviator() {
     return false;
   };
 
-  async function startRun(text: string, source?: "clickup" | "prompt"): Promise<boolean> {
+  async function startRun(text: string, source?: "clickup" | "prompt", images: ImageInput[] = []): Promise<boolean> {
     if (!projectId) {
       setNotice({ kind: "error", text: "Connect a project first: /new-project" });
       return false;
     }
     try {
-      const r = await api<Run>("/api/runs", { method: "POST", json: { projectId, text, source } });
+      const r = await api<Run>("/api/runs", { method: "POST", json: { projectId, text, source, images } });
       void loadRuns();
       selectRun(r.id);
       return true;
@@ -247,6 +274,12 @@ export function Aviator() {
         );
         return true;
       }
+      case "/agents":
+        openPage("agents");
+        return true;
+      case "/connections":
+        openPage("connections");
+        return true;
       case "/help":
         setShowHelp(true);
         return true;
@@ -255,22 +288,22 @@ export function Aviator() {
     }
   }
 
-  async function submit(text: string): Promise<boolean> {
+  async function submit(text: string, images: ImageInput[] = []): Promise<boolean> {
     setNotice(null);
     stickToBottom.current = true;
-    if (text.startsWith("/")) return command(text);
+    if (text.startsWith("/") && !images.length) return command(text);
     // After an uncommitted-changes failure, "stash" or "worktree" picks that fix.
     if (dirtyRepo && /\bstash\b/i.test(text)) return retry("stash");
     if (dirtyRepo && /\bwork ?tree\b/i.test(text)) return retry("worktree");
     if (active && runId) {
       try {
-        await api(`/api/runs/${runId}/message`, { method: "POST", json: { text } });
+        await api(`/api/runs/${runId}/message`, { method: "POST", json: { text, images } });
         return true;
       } catch (err) {
         return fail(err);
       }
     }
-    return startRun(text);
+    return startRun(text, undefined, images);
   }
 
   // ---------- composer state ----------
@@ -337,6 +370,9 @@ export function Aviator() {
         }}
         onPickRun={selectRun}
         onSignIn={() => setSigningIn(true)}
+        onAgents={() => openPage("agents")}
+        onConnections={() => openPage("connections")}
+        page={page}
       />
 
       <main className="main">
@@ -347,11 +383,11 @@ export function Aviator() {
           </div>
         )}
         <header className="topbar">
-          <span className="title">{runId ? (run?.title ?? "…") : "New task"}</span>
+          <span className="title">{page === "agents" ? "Agents" : page === "connections" ? "Connections" : runId ? (run?.title ?? "…") : "New task"}</span>
           {runId && runStatus && <span className={`pill ${runStatus}`}>{STATUS_GLYPH[runStatus].label}</span>}
-          {runId && (
+          {runId && !page && (
             <div className="filters" role="group" aria-label="Filter by agent">
-              {(["all", ...AGENTS, "orchestrator"] as Filter[]).map((a) => (
+              {(["all", ...AGENTS, ...customActors, "orchestrator"] as Filter[]).map((a) => (
                 <button
                   key={a}
                   className={`chip ${filter === a ? "on" : ""}`}
@@ -403,7 +439,11 @@ export function Aviator() {
             </div>
           )}
 
-          {!runId ? (
+          {page === "connections" ? (
+            <ConnectionsPage />
+          ) : page === "agents" ? (
+            <AgentsPage onSaved={setAgentSettings} />
+          ) : !runId ? (
             <>
               <div className="welcome">
                 <h1>
@@ -462,7 +502,7 @@ export function Aviator() {
             />
           )}
 
-          {dirtyRepo && (
+          {!page && dirtyRepo && (
             <div className="card amber">
               <h3 className="warn">Your repo has uncommitted changes</h3>
               <div className="muted">
@@ -509,7 +549,9 @@ export function Aviator() {
           activity={activity}
           cancellable={active}
           disabled={!project && !runId}
-          hintRight={project ? `${project.name} · ${project.model || "plan default model"} · effort ${project.effort}` : ""}
+          hintRight={[project?.name, agentSettings && `agents: ${PRESETS.find((p) => p.id === matchingPreset(agentSettings.agents))?.name ?? "Custom"}`]
+            .filter(Boolean)
+            .join(" · ")}
           onSubmit={submit}
           onCancel={cancel}
         />

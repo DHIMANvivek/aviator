@@ -67,7 +67,7 @@ export type Derived = {
   stageLabel?: string;
   tokens: number;
   planUsage?: PlanUsage;
-  agents: Partial<Record<AgentName, AgentState>>;
+  agents: Record<string, AgentState>;
   lastQuestionSeq: number;
   lastApprovalSeq: number;
   finalMessage?: string;
@@ -172,7 +172,8 @@ export const AGENT_GLYPH: Record<AgentState["status"], string> = {
   skipped: "–",
 };
 
-export const actorColor = (actor: string) => `var(--a-${actor})`;
+/** Built-in agents have their own color; custom agents share a violet one. */
+export const actorColor = (actor: string) => `var(--a-${actor}, var(--a-custom))`;
 
 export function storage(key: string, value?: string | null): string | null {
   try {

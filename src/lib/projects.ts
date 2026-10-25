@@ -2,9 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isGitRepo } from "./git";
-import type { Effort, ProjectInput } from "./types";
-
-const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
+import type { ProjectInput } from "./types";
 
 function list(value: unknown): string[] {
   if (Array.isArray(value)) return value.map(String).map((s) => s.trim()).filter(Boolean);
@@ -24,7 +22,7 @@ function dir(value: unknown): string | undefined {
 export function normalizeProject(body: Record<string, unknown>): ProjectInput {
   const layout = body.layout === "monorepo" ? "monorepo" : "separate";
   const tests = (body.testCommands ?? {}) as Record<string, unknown>;
-  const effort = EFFORTS.includes(body.effort as Effort) ? (body.effort as Effort) : "high";
+  // Model and effort are per agent now (Agents page), not per project.
   return {
     name: String(body.name ?? "").trim(),
     layout,
@@ -36,8 +34,6 @@ export function normalizeProject(body: Record<string, unknown>): ProjectInput {
     testCommands: { frontend: list(tests.frontend), backend: list(tests.backend) },
     isolation: body.isolation === "worktree" ? "worktree" : "branch",
     requirePlanApproval: body.requirePlanApproval !== false,
-    model: String(body.model ?? "").trim(),
-    effort,
   };
 }
 

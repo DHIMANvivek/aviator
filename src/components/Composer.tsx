@@ -1,12 +1,54 @@
 "use client";
 
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import type { ImageInput } from "@/lib/types";
+
+type Attachment = ImageInput & { url: string };
+
+const MAX_ATTACHMENTS = 6;
+const MAX_SIDE = 1800;
+const MAX_BYTES = 5 * 1024 * 1024;
+
+/**
+ * Read a screenshot for sending: large ones are scaled down (max 1800px) so they stay under
+ * the 5 MB limit and use less of your plan. Returns base64 data plus a preview URL.
+ */
+async function readImage(file: File): Promise<Attachment> {
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result));
+    r.onerror = () => reject(new Error(`Couldn't read ${file.name}.`));
+    r.readAsDataURL(file);
+  });
+  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const el = new Image();
+    el.onload = () => resolve(el);
+    el.onerror = () => reject(new Error(`${file.name} isn't an image Aviator can read.`));
+    el.src = dataUrl;
+  });
+  let url = dataUrl;
+  let mediaType = (["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.type) ? file.type : "image/png") as ImageInput["mediaType"];
+  const scale = Math.min(1, MAX_SIDE / Math.max(img.width, img.height));
+  if (scale < 1 || file.size > MAX_BYTES || !["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.type)) {
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(img.width * scale);
+    canvas.height = Math.round(img.height * scale);
+    canvas.getContext("2d")!.drawImage(img, 0, 0, canvas.width, canvas.height);
+    url = canvas.toDataURL("image/jpeg", 0.88);
+    mediaType = "image/jpeg";
+  }
+  const data = url.slice(url.indexOf(",") + 1);
+  if (data.length * 0.75 > MAX_BYTES) throw new Error(`${file.name} is still larger than 5 MB after resizing.`);
+  return { mediaType, data, name: file.name || "screenshot", url };
+}
 
 export const COMMANDS = [
   { cmd: "/clickup", args: "<link or id>", desc: "Start a run from a ClickUp task" },
   { cmd: "/new", args: "", desc: "Start a new task" },
   { cmd: "/approve", args: "", desc: "Approve the plan waiting for review" },
   { cmd: "/cancel", args: "", desc: "Cancel the current run" },
+  { cmd: "/agents", args: "", desc: "Model, effort, prompts and your custom agents" },
+  { cmd: "/connections", args: "", desc: "Connect MCP tools for your agents" },
   { cmd: "/project", args: "", desc: "Edit the current project" },
   { cmd: "/new-project", args: "", desc: "Connect another project" },
   { cmd: "/login", args: "", desc: "Sign in with your Claude subscription" },
@@ -29,7 +71,7 @@ type Props = {
   cancellable: boolean;
   disabled?: boolean;
   hintRight: string;
-  onSubmit: (text: string) => Promise<boolean>;
+  onSubmit: (text: string, images: ImageInput[]) => Promise<boolean>;
   onCancel: () => void;
 };
 
@@ -45,6 +87,10 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
   const history = useRef<string[]>([]);
   const histPos = useRef(-1);
   const area = useRef<HTMLTextAreaElement>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [attachError, setAttachError] = useState("");
+  const [dragging, setDragging] = useState(false);
 
   useImperativeHandle(ref, () => ({
     focus: (prefill?: string) => {
@@ -76,14 +122,35 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
 
   async function submit(text: string) {
     const trimmed = text.trim();
-    if (!trimmed || busy) return;
+    if ((!trimmed && !attachments.length) || busy) return;
     setBusy(true);
-    const ok = await onSubmit(trimmed);
+    const ok = await onSubmit(
+      trimmed,
+      attachments.map(({ url: _url, ...img }) => img),
+    );
     setBusy(false);
     if (ok) {
-      history.current.unshift(trimmed);
+      if (trimmed) history.current.unshift(trimmed);
       histPos.current = -1;
       setValue("");
+      setAttachments([]);
+      setAttachError("");
+    }
+  }
+
+  async function addFiles(files: File[]) {
+    const images = files.filter((f) => f.type.startsWith("image/"));
+    if (!images.length) return;
+    if (attachments.length + images.length > MAX_ATTACHMENTS) {
+      setAttachError(`Attach at most ${MAX_ATTACHMENTS} screenshots at a time.`);
+      return;
+    }
+    try {
+      const read = await Promise.all(images.map(readImage));
+      setAttachments((prev) => [...prev, ...read]);
+      setAttachError("");
+    } catch (e) {
+      setAttachError((e as Error).message);
     }
   }
 
@@ -157,7 +224,33 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
           <span>? {activity.text}</span>
         ) : null}
       </div>
-      <div className="inputbox">
+      <div
+        className={`inputbox ${dragging ? "dragging" : ""}`}
+        onDragOver={(e) => {
+          if ([...e.dataTransfer.items].some((i) => i.type.startsWith("image/"))) {
+            e.preventDefault();
+            setDragging(true);
+          }
+        }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragging(false);
+          void addFiles([...e.dataTransfer.files]);
+        }}
+      >
+        {attachments.length > 0 && (
+          <div className="attachments">
+            {attachments.map((a, i) => (
+              <div className="attachment" key={i} title={a.name}>
+                <img src={a.url} alt={a.name ?? `Screenshot ${i + 1}`} />
+                <button aria-label={`Remove ${a.name ?? "screenshot"}`} onClick={() => setAttachments(attachments.filter((_, j) => j !== i))}>
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         {menu.length > 0 && (
           <div className="cmd-menu" role="listbox">
             {menu.map((c, i) => (
@@ -190,12 +283,34 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
             setSel(0);
           }}
           onKeyDown={onKeyDown}
+          onPaste={(e) => {
+            const files = [...e.clipboardData.files].filter((f) => f.type.startsWith("image/"));
+            if (files.length) {
+              e.preventDefault();
+              void addFiles(files);
+            }
+          }}
           autoFocus
           spellCheck={false}
         />
+        <button className="attach-btn" onClick={() => fileInput.current?.click()} title="Attach screenshots (or paste / drop them)" aria-label="Attach screenshots" disabled={disabled}>
+          📎
+        </button>
+        <input
+          ref={fileInput}
+          type="file"
+          accept="image/png,image/jpeg,image/gif,image/webp"
+          multiple
+          hidden
+          onChange={(e) => {
+            void addFiles([...(e.target.files ?? [])]);
+            e.target.value = "";
+          }}
+        />
       </div>
+      {attachError && <div className="bad" style={{ fontSize: 12, padding: "4px 4px 0" }}>{attachError}</div>}
       <div className="hints">
-        <span>/ for commands · ⇧⏎ new line{cancellable ? " · esc esc to cancel" : ""}</span>
+        <span>/ for commands · ⇧⏎ new line · paste or drop screenshots{cancellable ? " · esc esc to cancel" : ""}</span>
         <span>{hintRight}</span>
       </div>
     </div>

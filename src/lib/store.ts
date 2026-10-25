@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { ACTIVE_STATUSES, AGENTS, type AgentName, type AgentState, type Project, type Run } from "./types";
+import { ACTIVE_STATUSES, AGENTS, type AgentName, type AgentState, type ImageInput, type Project, type Run } from "./types";
 
 // Plain JSON files: easy to inspect, back up, or delete by hand.
 //   .aviator/projects.json
@@ -98,4 +98,50 @@ export function markOrphaned(run: Run, isLive: boolean): Run {
 export function writeRunFile(runId: string, name: string, content: string) {
   fs.mkdirSync(runDir(runId), { recursive: true });
   fs.writeFileSync(path.join(runDir(runId), name), content);
+}
+
+// ---------- screenshots attached in the chat box ----------
+
+const IMAGE_EXT: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp" };
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_IMAGES = 6;
+
+/** Validate pasted/uploaded images from the browser; returns problems instead of throwing. */
+export function checkImages(value: unknown): { images: ImageInput[]; error?: string } {
+  if (value == null) return { images: [] };
+  if (!Array.isArray(value)) return { images: [], error: "Images must be a list." };
+  if (value.length > MAX_IMAGES) return { images: [], error: `Attach at most ${MAX_IMAGES} screenshots at a time.` };
+  const images: ImageInput[] = [];
+  for (const v of value as Partial<ImageInput>[]) {
+    if (!v?.mediaType || !IMAGE_EXT[v.mediaType] || typeof v.data !== "string") {
+      return { images: [], error: "Only PNG, JPEG, GIF and WebP images can be attached." };
+    }
+    if (Buffer.byteLength(v.data, "base64") > MAX_IMAGE_BYTES) {
+      return { images: [], error: `${v.name ?? "An image"} is larger than 5 MB.` };
+    }
+    images.push({ mediaType: v.mediaType, data: v.data, name: v.name?.slice(0, 80) });
+  }
+  return { images };
+}
+
+/** Saves images next to the run so the transcript can show them; returns their file names. */
+export function saveRunImages(runId: string, images: ImageInput[]): string[] {
+  if (!images.length) return [];
+  const dir = path.join(runDir(runId), "images");
+  fs.mkdirSync(dir, { recursive: true });
+  const stamp = Date.now();
+  return images.map((img, i) => {
+    const name = `${stamp}-${i + 1}.${IMAGE_EXT[img.mediaType]}`;
+    fs.writeFileSync(path.join(dir, name), Buffer.from(img.data, "base64"));
+    return name;
+  });
+}
+
+export function readRunImage(runId: string, name: string): { data: Buffer; type: string } | null {
+  if (!/^[\w-]+\.(png|jpg|gif|webp)$/.test(name) || !/^run_[a-f0-9]+$/.test(runId)) return null;
+  const file = path.join(runDir(runId), "images", name);
+  if (!fs.existsSync(file)) return null;
+  const ext = name.split(".").pop()!;
+  const type = Object.entries(IMAGE_EXT).find(([, e]) => e === ext)?.[0] ?? "application/octet-stream";
+  return { data: fs.readFileSync(file), type };
 }

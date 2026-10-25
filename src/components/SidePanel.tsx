@@ -53,6 +53,10 @@ export function SidePanel({
         ].filter(([, p]) => !!p) as [string, string][])
     : [];
   const current = stageIndex(derived.stage ?? run?.stage);
+  // Custom agents that ran in this run, after the built-in ones.
+  const extraAgents = [...new Set([...Object.keys(run?.agents ?? {}), ...Object.keys(derived.agents)])].filter(
+    (a) => !(AGENTS as readonly string[]).includes(a),
+  );
   const finished = derived.status === "done" || derived.status === "partial";
   const diff = run?.diff ?? [];
 
@@ -88,7 +92,7 @@ export function SidePanel({
         </ul>
 
         <div className="section-label">agents · click to filter</div>
-        {AGENTS.map((a) => {
+        {[...AGENTS, ...extraAgents].map((a) => {
           const st = derived.agents[a] ?? run?.agents[a];
           const status = st?.status ?? "idle";
           const time = st?.startedAt ? duration((st.endedAt ?? Date.now()) - st.startedAt) : "";
@@ -103,7 +107,7 @@ export function SidePanel({
               <span style={{ color: actorColor(a) }}>{a}</span>
               <span className="cost">{st && st.tokens > 0 ? `${tokens(st.tokens)} tok` : ""}</span>
               <span className="sub">
-                {status === "skipped" ? "not needed for this task" : ROLE[a]}
+                {status === "skipped" ? "not needed for this task" : (ROLE[a as AgentName] ?? "your custom agent")}
                 {st && st.turns > 0 ? ` · ${st.turns} turns` : ""}
                 {time ? ` · ${time}` : ""}
               </span>

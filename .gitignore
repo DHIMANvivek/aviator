@@ -8,3 +8,5 @@ next-env.d.ts
 .aviator-demo/
 .next-demo/
 .claude/
+.aviator-test/
+.next-test/

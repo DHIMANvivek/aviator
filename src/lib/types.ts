@@ -3,7 +3,8 @@
 export const AGENTS = ["researcher", "planner", "backend", "frontend", "qa", "reporter"] as const;
 export type AgentName = (typeof AGENTS)[number];
 export type BuilderName = "backend" | "frontend";
-export type Actor = AgentName | "orchestrator" | "user";
+/** A built-in agent, a custom agent id, the orchestrator, or you. */
+export type Actor = AgentName | "orchestrator" | "user" | (string & {});
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -23,9 +24,6 @@ export type Project = {
   /** "branch" switches the repo to a new branch (needs a clean tree); "worktree" leaves your checkout untouched. */
   isolation: "branch" | "worktree";
   requirePlanApproval: boolean;
-  /** Empty = your Claude Code plan's default model. */
-  model: string;
-  effort: Effort;
 };
 
 /** What Claude reports about your plan's included usage (from the SDK's rate-limit events). */
@@ -141,7 +139,8 @@ export type Run = {
   repos: RunRepo[];
   tokens: number;
   planUsage?: PlanUsage;
-  agents: Record<AgentName, AgentState>;
+  /** Built-in agents always; custom agents once they run. */
+  agents: Record<string, AgentState>;
   pendingQuestions?: string[];
   plan?: PlanOutput;
   report?: ReportOutput;
@@ -160,16 +159,27 @@ export type EventBody =
   | { kind: "stage"; stage: Stage; label: string }
   | { kind: "text"; text: string }
   | { kind: "thinking"; text: string }
+  /** Exactly what an agent was given when it started (or a follow-up it received). */
+  | {
+      kind: "prompt";
+      agent: string;
+      model: string;
+      effort: Effort;
+      maxTurns: number;
+      system: string;
+      message: string;
+      followUp: boolean;
+    }
   | { kind: "tool_use"; toolUseId: string; name: string; input: unknown; summary: string }
   | { kind: "tool_result"; toolUseId: string; isError: boolean; content: string }
-  | { kind: "relay"; from: AgentName | "user"; to: AgentName; text: string }
+  | { kind: "relay"; from: string; to: string; text: string }
   | { kind: "question"; questions: string[] }
   | { kind: "approval"; planMd: string; contractMd: string }
   | { kind: "status"; status: RunStatus; message?: string }
-  | { kind: "agent"; agent: AgentName; state: AgentState }
+  | { kind: "agent"; agent: string; state: AgentState }
   | { kind: "usage"; tokens: number }
   | { kind: "plan_usage"; usage: PlanUsage }
-  | { kind: "user"; text: string }
+  | { kind: "user"; text: string; images?: string[] }
   | { kind: "denied"; tool: string; reason: string }
   | { kind: "error"; message: string }
   | { kind: "report"; report: ReportOutput; diff: RepoDiff[] };
@@ -197,3 +207,15 @@ export type AppStatus = {
 export const MODEL_SUGGESTIONS = ["", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"];
 
 export const ACTIVE_STATUSES: RunStatus[] = ["running", "waiting_input", "waiting_approval"];
+
+/** What a custom agent placed at a pipeline step returns. */
+export type StepFinding = {
+  owner: BuilderName | "none";
+  severity: "blocker" | "suggestion";
+  summary: string;
+  details: string;
+};
+export type StepOutput = { summary: string; findings: StepFinding[] };
+
+/** A screenshot or image attached in the chat box, sent to agents as image content. */
+export type ImageInput = { mediaType: "image/png" | "image/jpeg" | "image/gif" | "image/webp"; data: string; name?: string };

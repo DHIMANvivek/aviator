@@ -269,6 +269,27 @@ function script(req: AgentRequest, briefHasAnswers: boolean): { steps: Step[]; s
         structured: report,
         text: "Report ready.",
       };
+    default:
+      // Your custom agents: a short generic review so the demo shows where they run.
+      return {
+        steps: [
+          { think: `Checking the work for this step as "${req.agent}".` },
+          { tool: "Grep", input: { pattern: "TODO|FIXME" }, summary: '"TODO|FIXME"', result: "No matches found" },
+          { tool: "Read", input: { file_path: "api/src/routes/uploads.ts" }, summary: "api/src/routes/uploads.ts", result: "export const uploads = Router();\n…" },
+        ],
+        structured: {
+          summary: `Demo review by ${req.agent}: no blocking problems.`,
+          findings: [
+            {
+              owner: "backend",
+              severity: "suggestion",
+              summary: "Add a per-user rate limit to the presign endpoint",
+              details: "api/src/routes/uploads.ts: the endpoint can be called repeatedly.",
+            },
+          ],
+        },
+        text: "Review done.",
+      };
   }
 }
 

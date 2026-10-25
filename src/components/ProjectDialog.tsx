@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/client";
 import type { ProjectSuggestion } from "@/lib/agents/configure";
 import type { RepoCandidate, RepoInspection } from "@/lib/inspectRepo";
-import { MODEL_SUGGESTIONS, type Effort, type Project } from "@/lib/types";
+import type { Project } from "@/lib/types";
 
 const splitDirs = (s: string) =>
   s
@@ -28,8 +28,6 @@ type Form = {
   backendTests: string;
   isolation: "branch" | "worktree";
   requirePlanApproval: boolean;
-  model: string;
-  effort: Effort;
 };
 
 function toForm(p?: Project | null): Form {
@@ -45,8 +43,6 @@ function toForm(p?: Project | null): Form {
     backendTests: (p?.testCommands.backend ?? []).join("\n"),
     isolation: p?.isolation ?? "branch",
     requirePlanApproval: p?.requirePlanApproval ?? true,
-    model: p?.model ?? "",
-    effort: p?.effort ?? "high",
   };
 }
 
@@ -248,8 +244,6 @@ export function ProjectDialog({
       testCommands: { frontend: f.frontendTests, backend: f.backendTests },
       isolation: f.isolation,
       requirePlanApproval: f.requirePlanApproval,
-      model: f.model,
-      effort: f.effort,
     };
     try {
       const saved = project
@@ -470,28 +464,10 @@ export function ProjectDialog({
           </span>
         </div>
 
-        <div className="grid2">
-          <div className="field">
-            <label htmlFor="p-model">Model</label>
-            <select id="p-model" value={f.model} onChange={(e) => set("model", e.target.value)}>
-              {MODEL_SUGGESTIONS.map((m) => (
-                <option key={m} value={m}>
-                  {m || "Default for my Claude plan"}
-                </option>
-              ))}
-              {!MODEL_SUGGESTIONS.includes(f.model) && <option value={f.model}>{f.model}</option>}
-            </select>
-          </div>
-          <div className="field">
-            <label htmlFor="p-effort">Effort</label>
-            <select id="p-effort" value={f.effort} onChange={(e) => set("effort", e.target.value as Effort)}>
-              {(["low", "medium", "high", "xhigh", "max"] as Effort[]).map((e) => (
-                <option key={e} value={e}>
-                  {e}
-                </option>
-              ))}
-            </select>
-          </div>
+        <div className="field">
+          <span className="help">
+            Model, effort and prompts are set per agent on the <b>Agents</b> page (sidebar, or type <code>/agents</code>).
+          </span>
         </div>
 
         <div className="field">

@@ -91,6 +91,33 @@ While a run is going, the one input box does three things:
 
 Messages reach a running agent mid-session, because the session takes streaming input.
 
+## Make it yours
+
+**Agents page** (`⚙ Agents` or `/agents`)
+- Per-agent model (only what your plan offers), effort, max turns and thinking display. Presets:
+  **Balanced** (research and planning extra high, coding medium, QA high, report low; the default),
+  **Save usage**, **Max quality**.
+- Edit every prompt: the rules all agents share and each agent's role, with preview, reset to
+  default, and version history. Each run shows each agent's **Instructions**: exactly what it was told.
+
+**Custom agents** (also on the Agents page; six templates to start from)
+- Name, purpose, prompt, model/effort/turns, built-in tools, which folders it may change, and which
+  connected tools it may use.
+- Run it **at a pipeline step** (after research, after planning, after building, before the report):
+  its notes feed the next stage, and "blocker" findings after building go back to the builder that
+  owns them before QA.
+- Or **on demand**: built-in agents call it when its purpose fits (e.g. a test writer for the backend).
+  Its work shows under its own name, with its own folder and tool limits.
+
+**Connections** (`⚡ Connections` or `/connections`): MCP tool servers
+- Local command or URL; **Test** lists the tools. For each tool, say what it's for (added to the
+  agents' prompts), whether it's allowed (destructive-looking tools start off), and which agents may
+  use it. Keys and tokens are stored only in `.aviator/connections.json` (owner-only), masked in the
+  UI, never logged or committed.
+
+**Screenshots**: paste, drop or 📎 attach images in the chat box. They go to the researcher, planner
+and builders as images (and to running agents when you steer), and show in the transcript.
+
 ## Safety rules (enforced in code, `src/lib/agents/guard.ts`)
 
 - No `git commit/push/checkout/reset/...`, no `gh pr`, no package publishing.
@@ -106,7 +133,10 @@ Messages reach a running agent mid-session, because the session takes streaming 
 | Path | What it does |
 |---|---|
 | `src/lib/auth.ts` | Sign-in mode, clean agent environment, account check |
-| `src/lib/agents/pipeline.ts` | Orchestrator: stages, approval, parallel builders, QA loop, report |
+| `src/lib/agents/pipeline.ts` | Orchestrator: stages, approval, parallel builders, custom step agents, QA loop, report |
+| `src/lib/agents/prompts.ts` | Default prompts as editable templates |
+| `src/lib/agentPresets.ts`, `src/lib/agentSettings.ts` | Per-agent settings, presets, custom agents, prompt history (`.aviator/agents.json`) |
+| `src/lib/connections.ts` | MCP connections, per-agent tool permissions, connection test |
 | `src/lib/agents/runAgent.ts` | One agent = one Agent SDK session; streams thinking/tools to the UI |
 | `src/lib/agents/definitions.ts` | Agent roles, tools, structured output schemas |
 | `src/lib/agents/guard.ts` | Tool-call safety rules |

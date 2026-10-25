@@ -15,6 +15,9 @@ type Props = {
   onNewTask: () => void;
   onPickRun: (id: string) => void;
   onSignIn: () => void;
+  onAgents: () => void;
+  onConnections: () => void;
+  page: "agents" | "connections" | null;
 };
 
 export function Sidebar(p: Props) {
@@ -48,6 +51,12 @@ export function Sidebar(p: Props) {
 
       <button className="btn primary new-task" onClick={p.onNewTask} disabled={!p.projectId}>
         + New task
+      </button>
+      <button className={`btn new-task ${p.page === "agents" ? "active-nav" : ""}`} onClick={p.onAgents} title="Model, effort, prompts and your own agents">
+        ⚙ Agents
+      </button>
+      <button className={`btn new-task ${p.page === "connections" ? "active-nav" : ""}`} onClick={p.onConnections} title="MCP tool servers your agents can use">
+        ⚡ Connections
       </button>
 
       <div className="section-label">runs</div>

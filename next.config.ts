@@ -6,7 +6,7 @@ const nextConfig: NextConfig = {
   serverExternalPackages: ["@anthropic-ai/claude-agent-sdk"],
   // Next allows one dev server per build folder; a separate one lets `npm run demo`
   // run next to `npm run dev`.
-  distDir: process.env.AVIATOR_DEMO === "1" ? ".next-demo" : ".next",
+  distDir: process.env.AVIATOR_DIST_DIR || (process.env.AVIATOR_DEMO === "1" ? ".next-demo" : ".next"),
   // Pin the root so a package-lock.json higher up (e.g. in $HOME) isn't mistaken for it.
   turbopack: { root: process.cwd() },
 };

@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, useState } from "react";
+import { EFFORT_LABEL } from "@/lib/agentPresets";
 import { actorColor, FINAL, tokens, type Derived } from "@/lib/client";
 import type { Actor, AviatorEvent, RunStatus } from "@/lib/types";
 import { Markdown } from "./Markdown";
@@ -115,6 +116,37 @@ function ToolRow({ use, result, live }: { use: ToolUse; result?: ToolResult; liv
   );
 }
 
+/** What an agent was given: its settings, the system prompt Aviator added, and the task message. */
+function InstructionsRow({ e }: { e: Extract<AviatorEvent, { kind: "prompt" }> }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <div className="row">
+        <span className="dot thinking">⚙</span>
+        <button className="expander" onClick={() => setOpen(!open)}>
+          <span className="tool-name">{e.followUp ? "Follow-up instructions" : "Instructions"}</span>
+          <span className="instr-meta">
+            {" "}
+            · {e.model || "plan default model"} · effort {EFFORT_LABEL[e.effort]} · up to {e.maxTurns} turns
+          </span>
+          <span className="hint"> {open ? "(collapse)" : "(see exactly what it was told)"}</span>
+        </button>
+      </div>
+      {open && (
+        <div className="instr-body" style={{ paddingLeft: 22 }}>
+          <h4>system prompt (added after Claude Code&apos;s built-in prompt; your repo&apos;s CLAUDE.md is loaded too)</h4>
+          <pre className="block">{e.system}</pre>
+          <h4>{e.followUp ? "message sent to the running agent" : "task message"}</h4>
+          <pre className="block">{e.message}</pre>
+          <a href="#agents" className="link-btn">
+            Change this agent&apos;s prompt or settings
+          </a>
+        </div>
+      )}
+    </>
+  );
+}
+
 function ThinkingRow({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
   const preview = text.replace(/\s+/g, " ").slice(0, 150);
@@ -160,7 +192,18 @@ function EventRow({
       return (
         <div className="user-msg">
           <span className="caret">&gt;</span>
-          <span>{e.text}</span>
+          <span>
+            {e.text}
+            {e.images?.length ? (
+              <span className="user-images">
+                {e.images.map((name) => (
+                  <a key={name} href={`/api/runs/${e.runId}/images/${name}`} target="_blank" rel="noreferrer" title="Open full size">
+                    <img src={`/api/runs/${e.runId}/images/${name}`} alt="Attached screenshot" />
+                  </a>
+                ))}
+              </span>
+            ) : null}
+          </span>
         </div>
       );
     case "text":
@@ -172,6 +215,8 @@ function EventRow({
       );
     case "thinking":
       return <ThinkingRow text={e.text} />;
+    case "prompt":
+      return <InstructionsRow e={e} />;
     case "relay":
       return (
         <div className="row">

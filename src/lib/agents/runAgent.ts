@@ -4,15 +4,16 @@ import {
   query,
   tool,
   USAGE_TRANSITION_PREFIXES,
+  type AgentDefinition,
   type McpServerConfig,
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { agentEnv } from "../auth";
 import { deliver, getLive } from "../runtime";
-import type { Actor, AgentName, AgentState, BuilderName, EventBody, PlanUsage, Project } from "../types";
-import { AGENT_MAX_TURNS, AGENT_TOOLS, rolePrompt } from "./definitions";
-import { checkTool, type GuardScope } from "./guard";
+import type { AgentConfig } from "../agentPresets";
+import type { Actor, AgentName, AgentState, BuilderName, EventBody, ImageInput, PlanUsage, Project } from "../types";
+import { checkTool, type GuardDecision, type GuardScope } from "./guard";
 
 /** What an agent needs from the run it belongs to. */
 export type AgentHost = {
@@ -20,8 +21,8 @@ export type AgentHost = {
   project: Project;
   abort: AbortController;
   emit: (actor: Actor, body: EventBody) => void;
-  setAgent: (agent: AgentName, patch: Partial<AgentState>) => void;
-  addUsage: (agent: AgentName, tokens: number, turns: number) => void;
+  setAgent: (agent: string, patch: Partial<AgentState>) => void;
+  addUsage: (agent: string, tokens: number, turns: number) => void;
   planUsage: (usage: PlanUsage) => void;
   /** End the whole run with a reason shown to the developer. */
   stop: (reason: string) => void;
@@ -34,8 +35,11 @@ export const EXTRA_USAGE_STOP =
   "Your plan's included usage ran out and Claude started using paid extra usage, so Aviator stopped the run. Aviator only uses your plan's included usage.";
 
 export type AgentRequest = {
-  agent: AgentName;
+  /** A built-in agent or a custom agent's id. */
+  agent: AgentName | (string & {});
   prompt: string;
+  /** Screenshots sent along with the prompt. */
+  images?: ImageInput[];
   cwd: string;
   additionalDirectories?: string[];
   /** Folders a builder may write to (absolute). */
@@ -45,6 +49,21 @@ export type AgentRequest = {
   schema?: Record<string, unknown>;
   /** Continue an earlier session of this agent instead of starting fresh. */
   resume?: string;
+};
+
+/** An on-demand custom agent another agent can call, with its own limits. */
+export type Helper = { definition: AgentDefinition; scope: GuardScope; check: (tool: string) => GuardDecision };
+
+/** A request with the agent's settings, prompt, tools and permissions, ready to run. */
+export type PreparedRequest = AgentRequest & {
+  config: AgentConfig;
+  system: string;
+  /** Built-in Claude Code tools this agent gets. */
+  tools: string[];
+  /** Your MCP connections this agent may use, and the per-tool permission check. */
+  connections?: { servers: Record<string, McpServerConfig>; check: (tool: string) => GuardDecision };
+  /** Custom agents it can call on demand, by id. */
+  helpers?: Record<string, Helper>;
 };
 
 export type AgentResult = {
@@ -63,11 +82,21 @@ class InputQueue implements AsyncIterable<SDKUserMessage> {
   private waiting?: (result: IteratorResult<SDKUserMessage>) => void;
   closed = false;
 
-  push(text: string): boolean {
+  push(text: string, images?: ImageInput[]): boolean {
     if (this.closed) return false;
+    // Screenshots go first as image blocks, then the text that refers to them.
+    const content = images?.length
+      ? [
+          ...images.map((img) => ({
+            type: "image" as const,
+            source: { type: "base64" as const, media_type: img.mediaType, data: img.data },
+          })),
+          { type: "text" as const, text },
+        ]
+      : text;
     const message = {
       type: "user",
-      message: { role: "user", content: text },
+      message: { role: "user", content },
       parent_tool_use_id: null,
     } as SDKUserMessage;
     if (this.waiting) {
@@ -148,6 +177,8 @@ export function summarizeTool(name: string, input: unknown, cwd: string): string
       return `${Array.isArray(i.todos) ? i.todos.length : 0} todos`;
     case "mcp__aviator__message_agent":
       return `to ${s("to")}`;
+    case "Agent":
+      return `${s("subagent_type") || "helper"}: ${s("description")}`;
     default:
       return JSON.stringify(input ?? {}).slice(0, 160);
   }
@@ -187,20 +218,40 @@ function relayServer(host: AgentHost, from: BuilderName, to: BuilderName): McpSe
  * event log. The session takes streaming input, so the developer's steering messages and the
  * other builder's relays are delivered while it works.
  */
-export async function runAgent(host: AgentHost, req: AgentRequest): Promise<AgentResult> {
-  const { agent, cwd } = req;
-  const { project } = host;
+export async function runAgent(host: AgentHost, req: PreparedRequest): Promise<AgentResult> {
+  const { agent, cwd, config } = req;
   const scope: GuardScope = { cwd, writableRoots: req.ownedPaths ?? [] };
+  const helpers = req.helpers ?? {};
   const input = new InputQueue();
-  input.push(req.prompt);
+  input.push(req.prompt, req.images);
 
   const live = getLive(host.runId);
-  live?.inboxes.set(agent, (text) => input.push(text));
+  live?.inboxes.set(agent, (text, images) => input.push(text, images));
 
-  const mcpServers: Record<string, McpServerConfig> = {};
+  // Your connections, plus Aviator's own server that lets the two builders message each other.
+  const mcpServers: Record<string, McpServerConfig> = { ...(req.connections?.servers ?? {}) };
   if (req.peer && (agent === "backend" || agent === "frontend")) {
-    mcpServers.aviator = relayServer(host, agent, req.peer);
+    mcpServers.aviator = relayServer(host, agent as BuilderName, req.peer);
   }
+
+  /**
+   * One permission check for every tool call. `who` is the helper agent making the call, if any,
+   * so each custom helper keeps its own folders and tools.
+   */
+  const decide = (who: string | undefined, toolName: string, toolInput: Record<string, unknown>): GuardDecision => {
+    const helper = who ? helpers[who] : undefined;
+    if (toolName.startsWith("mcp__") && !toolName.startsWith("mcp__aviator__")) {
+      const check = helper ? helper.check : req.connections?.check;
+      return check ? check(toolName) : { allow: false, reason: `No connections are set up for ${who ?? agent}.` };
+    }
+    return checkTool(helper ? helper.scope : scope, toolName, toolInput);
+  };
+  const helperIds = Object.keys(helpers);
+  const builtInTools = helperIds.length ? [...req.tools, "Agent"] : req.tools;
+  /** Agent-tool calls by id, so a helper's work is shown under the helper's name. */
+  const helperOfCall = new Map<string, string>();
+  const actorFor = (parentToolUseId: string | null | undefined) =>
+    (parentToolUseId && helperOfCall.get(parentToolUseId)) || agent;
 
   let stderrTail = "";
   let sessionId = req.resume;
@@ -220,26 +271,28 @@ export async function runAgent(host: AgentHost, req: AgentRequest): Promise<Agen
       options: {
         cwd,
         additionalDirectories: req.additionalDirectories,
-        model: project.model || undefined,
-        effort: project.effort,
-        thinking: { type: "adaptive", display: "summarized" },
-        systemPrompt: {
-          type: "preset",
-          preset: "claude_code",
-          append: rolePrompt(agent, { ownedPaths: req.ownedPaths, peer: req.peer }),
-        },
+        // Per-agent settings from the Agents page.
+        model: config.model || undefined,
+        effort: config.effort,
+        thinking: { type: "adaptive", display: config.showThinking ? "summarized" : "omitted" },
+        // Claude Code's own prompt, then Aviator's shared rules and this agent's role.
+        systemPrompt: { type: "preset", preset: "claude_code", append: req.system },
         // Loads the repo's CLAUDE.md so agents follow the project's own conventions.
         settingSources: ["project"],
         // On Windows, Claude Code may run commands through PowerShell instead of Git Bash.
-        tools:
-          process.platform === "win32" && AGENT_TOOLS[agent].includes("Bash")
-            ? [...AGENT_TOOLS[agent], "PowerShell"]
-            : AGENT_TOOLS[agent],
+        tools: process.platform === "win32" && builtInTools.includes("Bash") ? [...builtInTools, "PowerShell"] : builtInTools,
         allowedTools: req.peer ? ["mcp__aviator__message_agent"] : [],
         mcpServers,
+        // On-demand custom agents this agent can call through the Agent tool.
+        agents: helperIds.length ? Object.fromEntries(helperIds.map((id) => [id, helpers[id].definition])) : undefined,
+        forwardSubagentText: helperIds.length > 0,
         permissionMode: "default",
+        // The PreToolUse hook below applies each agent's exact limits; this only has to let
+        // through what at least one of them (the agent or a helper) may do.
         canUseTool: async (toolName, toolInput) => {
-          const decision = checkTool(scope, toolName, toolInput);
+          const decision = [undefined, ...helperIds]
+            .map((who) => decide(who, toolName, toolInput))
+            .find((d) => d.allow) ?? decide(undefined, toolName, toolInput);
           return decision.allow
             ? { behavior: "allow", updatedInput: toolInput }
             : { behavior: "deny", message: decision.reason };
@@ -251,9 +304,10 @@ export async function runAgent(host: AgentHost, req: AgentRequest): Promise<Agen
                 async (hookInput) => {
                   if (hookInput.hook_event_name !== "PreToolUse") return {};
                   const toolInput = (hookInput.tool_input ?? {}) as Record<string, unknown>;
-                  const decision = checkTool(scope, hookInput.tool_name, toolInput);
+                  const who = hookInput.agent_type && helpers[hookInput.agent_type] ? hookInput.agent_type : undefined;
+                  const decision = decide(who, hookInput.tool_name, toolInput);
                   if (decision.allow) return {};
-                  host.emit(agent, {
+                  host.emit(who ?? agent, {
                     kind: "denied",
                     tool: `${toolLabel(hookInput.tool_name)}(${summarizeTool(hookInput.tool_name, toolInput, cwd)})`,
                     reason: decision.reason,
@@ -271,7 +325,7 @@ export async function runAgent(host: AgentHost, req: AgentRequest): Promise<Agen
           ],
         },
         outputFormat: req.schema ? { type: "json_schema", schema: req.schema } : undefined,
-        maxTurns: AGENT_MAX_TURNS[agent],
+        maxTurns: config.maxTurns,
         resume: req.resume,
         abortController: host.abort,
         // Runs on your Claude Code login by default; see lib/auth.ts.
@@ -314,14 +368,17 @@ export async function runAgent(host: AgentHost, req: AgentRequest): Promise<Agen
       }
 
       if (msg.type === "assistant") {
+        const actor = actorFor(msg.parent_tool_use_id);
         for (const block of msg.message.content) {
           if (block.type === "text" && block.text.trim()) {
-            host.emit(agent, { kind: "text", text: block.text });
+            host.emit(actor, { kind: "text", text: block.text });
           } else if (block.type === "thinking" && block.thinking.trim()) {
-            host.emit(agent, { kind: "thinking", text: block.thinking });
+            host.emit(actor, { kind: "thinking", text: block.thinking });
           } else if (block.type === "tool_use") {
             toolNames.set(block.id, block.name);
-            host.emit(agent, {
+            const helper = block.name === "Agent" ? (block.input as { subagent_type?: string })?.subagent_type : undefined;
+            if (helper && helpers[helper]) helperOfCall.set(block.id, helper);
+            host.emit(actor, {
               kind: "tool_use",
               toolUseId: block.id,
               name: toolLabel(block.name),
@@ -334,13 +391,14 @@ export async function runAgent(host: AgentHost, req: AgentRequest): Promise<Agen
       }
 
       if (msg.type === "user" && Array.isArray(msg.message.content)) {
+        const actor = actorFor(msg.parent_tool_use_id);
         for (const block of msg.message.content) {
           if (block.type !== "tool_result") continue;
           let content = asText(block.content);
           if (content.length > MAX_LOGGED_RESULT) {
             content = `${content.slice(0, MAX_LOGGED_RESULT)}\n… (${content.length - MAX_LOGGED_RESULT} more characters not shown in the log)`;
           }
-          host.emit(agent, {
+          host.emit(actor, {
             kind: "tool_result",
             toolUseId: block.tool_use_id,
             isError: block.is_error === true,
