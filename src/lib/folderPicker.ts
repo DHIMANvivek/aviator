@@ -7,7 +7,7 @@ const exec = promisify(execFile);
 // Aviator runs on your own machine, so the server can open the operating system's real
 // folder picker and hand the chosen absolute path back to the browser (browsers themselves
 // never reveal full paths). macOS: Finder dialog. Windows: the standard folder dialog.
-// Linux: zenity (GNOME) or kdialog (KDE).
+// Linux: zenity (GNOME), kdialog (KDE), or the XDG desktop portal (Hyprland, Sway, ...).
 
 const CANCELLED = Symbol("cancelled");
 type ExecError = { code?: number | string; stderr?: string };
@@ -44,6 +44,44 @@ async function windows(prompt: string, start?: string) {
   return stdout.trim() || CANCELLED;
 }
 
+// The XDG desktop portal's file chooser (works where neither zenity nor kdialog is
+// installed, e.g. Hyprland with xdg-desktop-portal-gtk). The portal cancels the dialog if
+// the caller disconnects, and the chosen folder arrives later as a Request.Response
+// signal, so one Python + GObject process makes the call and waits for that signal.
+// Exit codes: 0 = chosen (path on stdout), 1 = cancelled.
+const PORTAL_SCRIPT = `
+import sys
+from urllib.parse import unquote, urlparse
+from gi.repository import Gio, GLib
+prompt, start = sys.argv[1], sys.argv[2]
+bus = Gio.bus_get_sync(Gio.BusType.SESSION)
+token = "aviator%d" % GLib.random_int()
+handle = "/org/freedesktop/portal/desktop/request/%s/%s" % (bus.get_unique_name()[1:].replace(".", "_"), token)
+loop = GLib.MainLoop()
+result = {}
+def on_response(conn, sender, path, iface, signal, params):
+    status, results = params.unpack()
+    uris = results.get("uris") or []
+    if status == 0 and uris:
+        result["path"] = unquote(urlparse(uris[0]).path)
+    loop.quit()
+bus.signal_subscribe("org.freedesktop.portal.Desktop", "org.freedesktop.portal.Request", "Response", handle, None, Gio.DBusSignalFlags.NONE, on_response)
+options = {"handle_token": GLib.Variant("s", token), "directory": GLib.Variant("b", True), "modal": GLib.Variant("b", True)}
+if start:
+    options["current_folder"] = GLib.Variant("ay", start.encode() + b"\\0")
+bus.call_sync("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", "org.freedesktop.portal.FileChooser", "OpenFile",
+              GLib.Variant("(ssa{sv})", ("", prompt, options)), None, Gio.DBusCallFlags.NONE, -1, None)
+loop.run()
+if "path" not in result:
+    sys.exit(1)
+print(result["path"])
+`;
+
+async function portal(prompt: string, start?: string) {
+  const { stdout } = await exec("python3", ["-c", PORTAL_SCRIPT, prompt, start ?? ""]);
+  return stdout.trim().replace(/\/$/, "") || CANCELLED;
+}
+
 async function linux(prompt: string, start?: string) {
   const attempts: [string, string[]][] = [
     ["zenity", ["--file-selection", "--directory", `--title=${prompt}`, ...(start ? [`--filename=${start}/`] : [])]],
@@ -59,6 +97,12 @@ async function linux(prompt: string, start?: string) {
       if (e.code === 1) return CANCELLED;
       throw err;
     }
+  }
+  try {
+    return await portal(prompt, start);
+  } catch (err) {
+    if ((err as ExecError).code === 1) return CANCELLED;
+    // python3/GObject missing or no portal running: report that no picker is available
   }
   throw Object.assign(new Error("no picker"), { code: "ENOENT" });
 }
@@ -79,7 +123,7 @@ export async function pickFolder(prompt: string, startIn?: string): Promise<stri
     if (e.code === "ENOENT") {
       throw new Error(
         process.platform === "linux"
-          ? "No folder picker found. Install zenity or kdialog, or type the path."
+          ? "No folder picker found. Install zenity, kdialog or xdg-desktop-portal-gtk, or type the path."
           : "The system folder picker isn't available here. Type the path instead.",
       );
     }
