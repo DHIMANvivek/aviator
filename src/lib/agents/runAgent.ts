@@ -64,6 +64,11 @@ export type PreparedRequest = AgentRequest & {
   connections?: { servers: Record<string, McpServerConfig>; check: (tool: string) => GuardDecision };
   /** Custom agents it can call on demand, by id. */
   helpers?: Record<string, Helper>;
+  /**
+   * General chat: Claude Code's full default tool set with every permission check skipped
+   * (no folder limits, no command guard) and your user settings loaded. `tools` is ignored.
+   */
+  unguarded?: boolean;
 };
 
 export type AgentResult = {
@@ -277,53 +282,58 @@ export async function runAgent(host: AgentHost, req: PreparedRequest): Promise<A
         thinking: { type: "adaptive", display: config.showThinking ? "summarized" : "omitted" },
         // Claude Code's own prompt, then Aviator's shared rules and this agent's role.
         systemPrompt: { type: "preset", preset: "claude_code", append: req.system },
-        // Loads the repo's CLAUDE.md so agents follow the project's own conventions.
-        settingSources: ["project"],
-        // On Windows, Claude Code may run commands through PowerShell instead of Git Bash.
-        tools: process.platform === "win32" && builtInTools.includes("Bash") ? [...builtInTools, "PowerShell"] : builtInTools,
-        allowedTools: req.peer ? ["mcp__aviator__message_agent"] : [],
+        // Loads the repo's CLAUDE.md so agents follow the project's own conventions; the
+        // general chat also loads your own Claude Code settings, like the CLI does.
+        settingSources: req.unguarded ? ["user", "project", "local"] : ["project"],
         mcpServers,
-        // On-demand custom agents this agent can call through the Agent tool.
-        agents: helperIds.length ? Object.fromEntries(helperIds.map((id) => [id, helpers[id].definition])) : undefined,
-        forwardSubagentText: helperIds.length > 0,
-        permissionMode: "default",
-        // The PreToolUse hook below applies each agent's exact limits; this only has to let
-        // through what at least one of them (the agent or a helper) may do.
-        canUseTool: async (toolName, toolInput) => {
-          const decision = [undefined, ...helperIds]
-            .map((who) => decide(who, toolName, toolInput))
-            .find((d) => d.allow) ?? decide(undefined, toolName, toolInput);
-          return decision.allow
-            ? { behavior: "allow", updatedInput: toolInput }
-            : { behavior: "deny", message: decision.reason };
-        },
-        hooks: {
-          PreToolUse: [
-            {
-              hooks: [
-                async (hookInput) => {
-                  if (hookInput.hook_event_name !== "PreToolUse") return {};
-                  const toolInput = (hookInput.tool_input ?? {}) as Record<string, unknown>;
-                  const who = hookInput.agent_type && helpers[hookInput.agent_type] ? hookInput.agent_type : undefined;
-                  const decision = decide(who, hookInput.tool_name, toolInput);
-                  if (decision.allow) return {};
-                  host.emit(who ?? agent, {
-                    kind: "denied",
-                    tool: `${toolLabel(hookInput.tool_name)}(${summarizeTool(hookInput.tool_name, toolInput, cwd)})`,
-                    reason: decision.reason,
-                  });
-                  return {
-                    hookSpecificOutput: {
-                      hookEventName: "PreToolUse",
-                      permissionDecision: "deny",
-                      permissionDecisionReason: decision.reason,
+        ...(req.unguarded
+          ? { permissionMode: "bypassPermissions" as const, allowDangerouslySkipPermissions: true }
+          : {
+            // On Windows, Claude Code may run commands through PowerShell instead of Git Bash.
+            tools: process.platform === "win32" && builtInTools.includes("Bash") ? [...builtInTools, "PowerShell"] : builtInTools,
+            allowedTools: req.peer ? ["mcp__aviator__message_agent"] : [],
+            // On-demand custom agents this agent can call through the Agent tool.
+            agents: helperIds.length ? Object.fromEntries(helperIds.map((id) => [id, helpers[id].definition])) : undefined,
+            forwardSubagentText: helperIds.length > 0,
+            permissionMode: "default" as const,
+            // The PreToolUse hook below applies each agent's exact limits; this only has to let
+            // through what at least one of them (the agent or a helper) may do.
+            canUseTool: async (toolName, toolInput) => {
+              const decision = [undefined, ...helperIds]
+                .map((who) => decide(who, toolName, toolInput))
+                .find((d) => d.allow) ?? decide(undefined, toolName, toolInput);
+              return decision.allow
+                ? { behavior: "allow", updatedInput: toolInput }
+                : { behavior: "deny", message: decision.reason };
+            },
+            hooks: {
+              PreToolUse: [
+                {
+                  hooks: [
+                    async (hookInput) => {
+                      if (hookInput.hook_event_name !== "PreToolUse") return {};
+                      const toolInput = (hookInput.tool_input ?? {}) as Record<string, unknown>;
+                      const who = hookInput.agent_type && helpers[hookInput.agent_type] ? hookInput.agent_type : undefined;
+                      const decision = decide(who, hookInput.tool_name, toolInput);
+                      if (decision.allow) return {};
+                      host.emit(who ?? agent, {
+                        kind: "denied",
+                        tool: `${toolLabel(hookInput.tool_name)}(${summarizeTool(hookInput.tool_name, toolInput, cwd)})`,
+                        reason: decision.reason,
+                      });
+                      return {
+                        hookSpecificOutput: {
+                          hookEventName: "PreToolUse",
+                          permissionDecision: "deny",
+                          permissionDecisionReason: decision.reason,
+                        },
+                      };
                     },
-                  };
+                  ],
                 },
               ],
             },
-          ],
-        },
+          }),
         outputFormat: req.schema ? { type: "json_schema", schema: req.schema } : undefined,
         maxTurns: config.maxTurns,
         resume: req.resume,

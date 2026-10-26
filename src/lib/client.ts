@@ -70,11 +70,12 @@ export type Derived = {
   agents: Record<string, AgentState>;
   lastQuestionSeq: number;
   lastApprovalSeq: number;
+  lastBranchSeq: number;
   finalMessage?: string;
 };
 
 export function derive(events: AviatorEvent[]): Derived {
-  const d: Derived = { tokens: 0, agents: {}, lastQuestionSeq: 0, lastApprovalSeq: 0 };
+  const d: Derived = { tokens: 0, agents: {}, lastQuestionSeq: 0, lastApprovalSeq: 0, lastBranchSeq: 0 };
   for (const e of events) {
     switch (e.kind) {
       case "status":
@@ -99,6 +100,9 @@ export function derive(events: AviatorEvent[]): Derived {
         break;
       case "approval":
         d.lastApprovalSeq = e.seq;
+        break;
+      case "branch":
+        d.lastBranchSeq = e.seq;
         break;
     }
   }

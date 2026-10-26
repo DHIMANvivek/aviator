@@ -49,6 +49,7 @@ export const COMMANDS = [
   { cmd: "/cancel", args: "", desc: "Cancel the current run" },
   { cmd: "/agents", args: "", desc: "Model, effort, prompts and your custom agents" },
   { cmd: "/connections", args: "", desc: "Connect MCP tools for your agents" },
+  { cmd: "/chat", args: "", desc: "General chat with full access to the project (no guardrails)" },
   { cmd: "/project", args: "", desc: "Edit the current project" },
   { cmd: "/new-project", args: "", desc: "Connect another project" },
   { cmd: "/login", args: "", desc: "Sign in with your Claude subscription" },
@@ -73,10 +74,12 @@ type Props = {
   hintRight: string;
   onSubmit: (text: string, images: ImageInput[]) => Promise<boolean>;
   onCancel: () => void;
+  /** Slash commands offered while typing "/"; defaults to the task commands. */
+  commands?: typeof COMMANDS;
 };
 
 export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
-  { placeholder, activity, cancellable, disabled, hintRight, onSubmit, onCancel },
+  { placeholder, activity, cancellable, disabled, hintRight, onSubmit, onCancel, commands = COMMANDS },
   ref,
 ) {
   const [value, setValue] = useState("");
@@ -118,7 +121,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
     el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
   }, [value]);
 
-  const menu = value.startsWith("/") && !value.includes(" ") ? COMMANDS.filter((c) => c.cmd.startsWith(value)) : [];
+  const menu = value.startsWith("/") && !value.includes(" ") ? commands.filter((c) => c.cmd.startsWith(value)) : [];
 
   async function submit(text: string) {
     const trimmed = text.trim();

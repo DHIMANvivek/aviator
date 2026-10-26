@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { EventEmitter } from "node:events";
-import { runDir } from "./store";
+import { logDir } from "./store";
 import type { Actor, AviatorEvent, EventBody, ImageInput, PlanUsage } from "./types";
 
 export type PendingMessage = { text: string; images?: ImageInput[] };
@@ -50,7 +50,7 @@ export function resetTime(usage?: PlanUsage): number | undefined {
   return usage.resetsAt < 1e12 ? usage.resetsAt * 1000 : usage.resetsAt;
 }
 
-const eventsFile = (runId: string) => path.join(runDir(runId), "events.jsonl");
+const eventsFile = (runId: string) => path.join(logDir(runId), "events.jsonl");
 
 export function history(runId: string): AviatorEvent[] {
   let events = rt.history.get(runId);
@@ -72,10 +72,15 @@ export function emit(runId: string, actor: Actor, body: EventBody): AviatorEvent
   const events = history(runId);
   const event = { ...body, seq: events.length + 1, ts: Date.now(), runId, actor } as AviatorEvent;
   events.push(event);
-  fs.mkdirSync(runDir(runId), { recursive: true });
+  fs.mkdirSync(logDir(runId), { recursive: true });
   fs.appendFileSync(eventsFile(runId), JSON.stringify(event) + "\n");
   rt.emitter.emit(runId, event);
   return event;
+}
+
+/** Drop a deleted run's or chat's cached event log. */
+export function forget(runId: string) {
+  rt.history.delete(runId);
 }
 
 export function subscribe(runId: string, listener: (e: AviatorEvent) => void): () => void {

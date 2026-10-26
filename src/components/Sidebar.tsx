@@ -1,7 +1,7 @@
 "use client";
 
 import { ago, planUsageLine, STATUS_GLYPH, tokens, type RunSummary } from "@/lib/client";
-import type { AppStatus, Project } from "@/lib/types";
+import type { AppStatus, ChatSummary, Project } from "@/lib/types";
 
 type Props = {
   status: AppStatus | null;
@@ -17,11 +17,16 @@ type Props = {
   onSignIn: () => void;
   onAgents: () => void;
   onConnections: () => void;
-  page: "agents" | "connections" | null;
+  chats: ChatSummary[];
+  selectedChatId: string | null;
+  /** Open the general chat page: one chat, or null for a new one. */
+  onChat: (id: string | null) => void;
+  page: "agents" | "connections" | "chat" | null;
 };
 
 export function Sidebar(p: Props) {
   const runs = p.runs.filter((r) => r.projectId === p.projectId);
+  const chats = p.chats.filter((c) => c.projectId === p.projectId);
   const auth = p.status?.auth;
   const plan = planUsageLine(p.status?.planUsage);
   return (
@@ -58,29 +63,63 @@ export function Sidebar(p: Props) {
       <button className={`btn new-task ${p.page === "connections" ? "active-nav" : ""}`} onClick={p.onConnections} title="MCP tool servers your agents can use">
         ⚡ Connections
       </button>
+      <button
+        className={`btn new-task ${p.page === "chat" ? "active-nav" : ""}`}
+        onClick={() => p.onChat(null)}
+        disabled={!p.projectId}
+        title="Ask anything about this project's code: one Claude Code session with full access, outside the task pipeline"
+      >
+        ✦ General chat
+      </button>
 
-      <div className="section-label">runs</div>
-      <div className="runs">
-        {runs.length === 0 && <div className="faint" style={{ padding: "0 10px" }}>No runs yet</div>}
-        {runs.map((r) => {
-          const g = STATUS_GLYPH[r.status];
-          return (
-            <button
-              key={r.id}
-              className={`run-item ${r.id === p.selectedRunId ? "active" : ""}`}
-              onClick={() => p.onPickRun(r.id)}
-              title={`${r.title} · ${g.label}`}
-            >
-              <span className={`glyph ${g.cls}`}>{g.glyph}</span>
-              <span className="run-title">{r.title}</span>
-              <span className="run-meta">
-                {ago(r.createdAt)} · {g.label}
-                {r.tokens ? ` · ${tokens(r.tokens)} tokens` : ""}
-              </span>
-            </button>
-          );
-        })}
-      </div>
+      {p.page === "chat" ? (
+        <>
+          <div className="section-label">chats</div>
+          <div className="runs">
+            {chats.length === 0 && <div className="faint" style={{ padding: "0 10px" }}>No chats yet</div>}
+            {chats.map((c) => (
+              <button
+                key={c.id}
+                className={`run-item ${c.id === p.selectedChatId ? "active" : ""}`}
+                onClick={() => p.onChat(c.id)}
+                title={c.title}
+              >
+                <span className={`glyph ${c.busy ? "running" : "done"}`}>{c.busy ? "●" : "✦"}</span>
+                <span className="run-title">{c.title}</span>
+                <span className="run-meta">
+                  {ago(c.updatedAt)}
+                  {c.tokens ? ` · ${tokens(c.tokens)} tokens` : ""}
+                </span>
+              </button>
+            ))}
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="section-label">runs</div>
+          <div className="runs">
+            {runs.length === 0 && <div className="faint" style={{ padding: "0 10px" }}>No runs yet</div>}
+            {runs.map((r) => {
+              const g = STATUS_GLYPH[r.status];
+              return (
+                <button
+                  key={r.id}
+                  className={`run-item ${r.id === p.selectedRunId ? "active" : ""}`}
+                  onClick={() => p.onPickRun(r.id)}
+                  title={`${r.title} · ${g.label}`}
+                >
+                  <span className={`glyph ${g.cls}`}>{g.glyph}</span>
+                  <span className="run-title">{r.title}</span>
+                  <span className="run-meta">
+                    {ago(r.createdAt)} · {g.label}
+                    {r.tokens ? ` · ${tokens(r.tokens)} tokens` : ""}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
 
       <div className="env">
         {!auth ? (

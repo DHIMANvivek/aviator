@@ -166,6 +166,8 @@ function ThinkingRow({ text }: { text: string }) {
 type Handlers = {
   onApprove: () => void;
   onRequestChanges: () => void;
+  /** Name the run's branch. */
+  onBranch: (name: string) => void;
 };
 
 function EventRow({
@@ -278,6 +280,8 @@ function EventRow({
         </div>
       );
     }
+    case "branch":
+      return <BranchCard event={e} active={status === "waiting_input" && e.seq === derived.lastBranchSeq} onBranch={handlers.onBranch} />;
     case "approval": {
       const active = status === "waiting_approval" && e.seq === derived.lastApprovalSeq;
       return (
@@ -335,6 +339,40 @@ function EventRow({
     default:
       return null;
   }
+}
+
+function BranchCard({
+  event,
+  active,
+  onBranch,
+}: {
+  event: Extract<AviatorEvent, { kind: "branch" }>;
+  active: boolean;
+  onBranch: (name: string) => void;
+}) {
+  const [name, setName] = useState(event.suggested);
+  if (!active) return null;
+  return (
+    <div className="card amber">
+      <h3 className="warn">? Name the branch for this run</h3>
+      {event.problem && <div className="bad" style={{ marginBottom: 8 }}>{event.problem}</div>}
+      <form
+        className="branch-form"
+        onSubmit={(ev) => {
+          ev.preventDefault();
+          onBranch(name.trim());
+        }}
+      >
+        <input value={name} onChange={(ev) => setName(ev.target.value)} spellCheck={false} aria-label="Branch name" autoFocus />
+        <button className="btn solid" type="submit" disabled={!name.trim()}>
+          Create branch
+        </button>
+      </form>
+      <div className="muted" style={{ marginTop: 8 }}>
+        Edit the name, or type one below and press Enter.
+      </div>
+    </div>
+  );
 }
 
 export function Transcript({

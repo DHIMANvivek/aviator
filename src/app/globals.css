@@ -1469,3 +1469,28 @@ pre.block {
   border-radius: 6px;
   border: 1px solid var(--line-strong);
 }
+
+/* ---------- general chat ---------- */
+
+/* The chat page has no pipeline side panel (narrow screens already hide it). */
+@media (min-width: 1181px) {
+  .app.no-side {
+    grid-template-columns: 250px minmax(0, 1fr);
+  }
+}
+
+.branch-form {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.branch-form input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-input);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font: inherit;
+  color: var(--text);
+}

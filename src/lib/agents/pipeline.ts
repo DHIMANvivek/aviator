@@ -1,6 +1,6 @@
 import path from "node:path";
 import { fetchClickUpTask, parseClickUpRef } from "../clickup";
-import { diffRepo, DirtyRepoError, prepareRepo, slugify } from "../git";
+import { branchProblem, diffRepo, DirtyRepoError, isDirty, prepareRepo, suggestBranch } from "../git";
 import {
   emit as emitEvent,
   getPlanUsage,
@@ -252,11 +252,8 @@ function promptBrief(text: string): TaskBrief {
   };
 }
 
-export function startRun(input: StartRunInput): Run {
-  const project = getProject(input.projectId);
-  if (!project) throw new Error("Project not found. Set one up with /project first.");
-  const now = Date.now();
-  // Only included plan usage is used: don't start while the plan limit is reached.
+/** Only included plan usage is used: don't start anything while the plan limit is reached. */
+export function assertPlanUsage(now = Date.now()) {
   const usage = getPlanUsage();
   const resets = resetTime(usage);
   if (usage && (usage.status === "rejected" || usage.usingExtraUsage) && (!resets || resets > now)) {
@@ -264,6 +261,13 @@ export function startRun(input: StartRunInput): Run {
       `Your Claude plan's included usage is used up${resets ? ` until ${new Date(resets).toLocaleString()}` : ""}. Aviator doesn't use paid extra usage, so start this after the limit resets.`,
     );
   }
+}
+
+export function startRun(input: StartRunInput): Run {
+  const project = getProject(input.projectId);
+  if (!project) throw new Error("Project not found. Set one up with /project first.");
+  const now = Date.now();
+  assertPlanUsage(now);
   const run: Run = {
     id: newId("run"),
     projectId: project.id,
@@ -305,9 +309,38 @@ function waitFor<T>(live: LiveRun, key: "answer" | "decide"): Promise<T> {
   });
 }
 
-async function prepareWorkspace(ctx: RunContext): Promise<Workspace> {
+/** The repos a run's branch is created in. */
+function projectRepos(project: Project): string[] {
+  return project.layout === "monorepo"
+    ? [project.root].filter((p): p is string => !!p)
+    : [project.backendPath, project.frontendPath].filter((p): p is string => !!p);
+}
+
+/** Ask the developer what to call the branch, suggesting a short name, until git accepts it. */
+async function chooseBranch(ctx: RunContext): Promise<string> {
+  const { run, project, live } = ctx;
+  const suggested = suggestBranch(run.brief.title, run.brief.clickupId);
+  if (run.demo) return suggested;
+  const repos = projectRepos(project);
+  // Fail before asking when the checkout can't be switched anyway.
+  if (project.isolation === "branch") {
+    for (const repo of repos) if (await isDirty(repo).catch(() => false)) throw new DirtyRepoError(repo);
+  }
+  let problem: string | undefined;
+  for (;;) {
+    ctx.emit("orchestrator", { kind: "branch", suggested, problem });
+    ctx.status("waiting_input");
+    const answer = (await waitFor<string>(live, "answer")).trim();
+    ctx.status("running");
+    // "ok", "yes" or an empty answer takes the suggestion.
+    const name = !answer || /^(ok|okay|yes|y|use it|default)$/i.test(answer) ? suggested : answer.replace(/^`|`$/g, "");
+    problem = (await branchProblem(name, repos)) ?? undefined;
+    if (!problem) return name;
+  }
+}
+
+async function prepareWorkspace(ctx: RunContext, branch: string): Promise<Workspace> {
   const { project, run } = ctx;
-  const branch = `aviator/${slugify(run.brief.clickupId ? `${run.brief.clickupId}-${run.brief.title}` : run.brief.title)}-${run.id.slice(-4)}`;
   const worktree = (role: string) => path.join(dataDir, "worktrees", run.id, role);
   const prepare = async (role: "monorepo" | BuilderName, repoPath: string) =>
     run.demo
@@ -558,9 +591,11 @@ async function execute(ctx: RunContext, input: StartRunInput) {
         .join(" · "),
     );
 
-    // 2. Branch (or worktree) per repo so the agents' work stays isolated
+    // 2. Branch (or worktree) per repo so the agents' work stays isolated; you name it
+    ctx.stage("prepare", "Naming the branch");
+    const branch = await chooseBranch(ctx);
     ctx.stage("prepare", "Creating a branch");
-    const ws = await prepareWorkspace(ctx);
+    const ws = await prepareWorkspace(ctx, branch);
     ctx.ws = ws;
     ctx.say(
       run.repos

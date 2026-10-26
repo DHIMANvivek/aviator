@@ -29,6 +29,37 @@ export function slugify(text: string): string {
   );
 }
 
+/** A short default branch name: the first few words of the title, e.g. aviator/add-photo-upload. */
+export function suggestBranch(title: string, clickupId?: string): string {
+  const words = slugify(title).split("-").filter(Boolean);
+  let slug = "";
+  for (const w of words) {
+    if (slug && slug.length + w.length + 1 > 28) break;
+    slug = slug ? `${slug}-${w}` : w;
+  }
+  return `aviator/${[clickupId?.toLowerCase(), slug.slice(0, 28) || "task"].filter(Boolean).join("-")}`;
+}
+
+/** Why a branch name can't be used in these repos, or null if it can. */
+export async function branchProblem(name: string, repoPaths: string[]): Promise<string | null> {
+  if (!name) return "Type a branch name.";
+  if (/\s/.test(name)) return `"${name}" has spaces; use dashes instead.`;
+  try {
+    await exec("git", ["check-ref-format", "--branch", name]);
+  } catch {
+    return `"${name}" isn't a valid git branch name.`;
+  }
+  for (const repo of repoPaths) {
+    try {
+      await git(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${name}`]);
+      return `A branch called "${name}" already exists in ${repo}.`;
+    } catch {
+      // doesn't exist yet: good
+    }
+  }
+  return null;
+}
+
 export class DirtyRepoError extends Error {
   constructor(public repo: string) {
     super(

@@ -1,13 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { ACTIVE_STATUSES, AGENTS, type AgentName, type AgentState, type ImageInput, type Project, type Run } from "./types";
+import { ACTIVE_STATUSES, AGENTS, type AgentName, type AgentState, type Chat, type ImageInput, type Project, type Run } from "./types";
 
 // Plain JSON files: easy to inspect, back up, or delete by hand.
 //   .aviator/projects.json
 //   .aviator/runs/<runId>/run.json      run state
 //   .aviator/runs/<runId>/events.jsonl  every streamed event, for replay
 //   .aviator/runs/<runId>/*.md          research, plan and contract
+//   .aviator/chats/<chatId>/chat.json   general chat state (+ events.jsonl, images/)
 
 export const dataDir = path.resolve(process.env.AVIATOR_DATA_DIR || path.join(process.cwd(), ".aviator"));
 
@@ -95,6 +96,37 @@ export function markOrphaned(run: Run, isLive: boolean): Run {
   return run;
 }
 
+// ---------- general chats ----------
+
+export const chatDir = (chatId: string) => path.join(dataDir, "chats", chatId);
+
+/** Where a run's or a chat's event log and screenshots live. */
+export const logDir = (id: string) => (id.startsWith("chat_") ? chatDir(id) : runDir(id));
+
+export function saveChat(chat: Chat) {
+  chat.updatedAt = Date.now();
+  writeJson(path.join(chatDir(chat.id), "chat.json"), chat);
+}
+
+export function getChat(chatId: string): Chat | undefined {
+  if (!/^chat_[a-f0-9]+$/.test(chatId)) return undefined;
+  return readJson<Chat | undefined>(path.join(chatDir(chatId), "chat.json"), undefined);
+}
+
+export function listChats(): Chat[] {
+  const dir = path.join(dataDir, "chats");
+  if (!fs.existsSync(dir)) return [];
+  return fs
+    .readdirSync(dir)
+    .map((id) => getChat(id))
+    .filter((c): c is Chat => !!c)
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+export function deleteChat(chatId: string) {
+  if (getChat(chatId)) fs.rmSync(chatDir(chatId), { recursive: true, force: true });
+}
+
 export function writeRunFile(runId: string, name: string, content: string) {
   fs.mkdirSync(runDir(runId), { recursive: true });
   fs.writeFileSync(path.join(runDir(runId), name), content);
@@ -124,10 +156,10 @@ export function checkImages(value: unknown): { images: ImageInput[]; error?: str
   return { images };
 }
 
-/** Saves images next to the run so the transcript can show them; returns their file names. */
+/** Saves images next to the run (or chat) so the transcript can show them; returns their file names. */
 export function saveRunImages(runId: string, images: ImageInput[]): string[] {
   if (!images.length) return [];
-  const dir = path.join(runDir(runId), "images");
+  const dir = path.join(logDir(runId), "images");
   fs.mkdirSync(dir, { recursive: true });
   const stamp = Date.now();
   return images.map((img, i) => {
@@ -138,8 +170,8 @@ export function saveRunImages(runId: string, images: ImageInput[]): string[] {
 }
 
 export function readRunImage(runId: string, name: string): { data: Buffer; type: string } | null {
-  if (!/^[\w-]+\.(png|jpg|gif|webp)$/.test(name) || !/^run_[a-f0-9]+$/.test(runId)) return null;
-  const file = path.join(runDir(runId), "images", name);
+  if (!/^[\w-]+\.(png|jpg|gif|webp)$/.test(name) || !/^(run|chat)_[a-f0-9]+$/.test(runId)) return null;
+  const file = path.join(logDir(runId), "images", name);
   if (!fs.existsSync(file)) return null;
   const ext = name.split(".").pop()!;
   const type = Object.entries(IMAGE_EXT).find(([, e]) => e === ext)?.[0] ?? "application/octet-stream";

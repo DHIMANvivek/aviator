@@ -174,6 +174,8 @@ export type EventBody =
   | { kind: "tool_result"; toolUseId: string; isError: boolean; content: string }
   | { kind: "relay"; from: string; to: string; text: string }
   | { kind: "question"; questions: string[] }
+  /** Asks you to name the run's branch; `problem` says why the last name didn't work. */
+  | { kind: "branch"; suggested: string; problem?: string }
   | { kind: "approval"; planMd: string; contractMd: string }
   | { kind: "status"; status: RunStatus; message?: string }
   | { kind: "agent"; agent: string; state: AgentState }
@@ -219,3 +221,24 @@ export type StepOutput = { summary: string; findings: StepFinding[] };
 
 /** A screenshot or image attached in the chat box, sent to agents as image content. */
 export type ImageInput = { mediaType: "image/png" | "image/jpeg" | "image/gif" | "image/webp"; data: string; name?: string };
+
+/**
+ * A general chat: one Claude Code session in the project's own folders, outside the task
+ * pipeline. No branch, no folder limits and no command guard.
+ */
+export type Chat = {
+  id: string;
+  projectId: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  /** The Claude Code session each new message resumes. */
+  sessionId?: string;
+  tokens: number;
+  agent: AgentState;
+};
+
+export type ChatSummary = Pick<Chat, "id" | "projectId" | "title" | "createdAt" | "updatedAt" | "tokens"> & { busy: boolean };
+
+/** The chat's single agent, as it appears in the transcript. */
+export const CHAT_AGENT = "claude";

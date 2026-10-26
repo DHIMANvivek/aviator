@@ -13,14 +13,15 @@ import {
   VERBS,
   type RunSummary,
 } from "@/lib/client";
-import { AGENTS, type AppStatus, type AviatorEvent, type ImageInput, type Project, type Run } from "@/lib/types";
+import { AGENTS, type AppStatus, type AviatorEvent, type ChatSummary, type ImageInput, type Project, type Run } from "@/lib/types";
 import { Composer, COMMANDS, type Activity, type ComposerHandle } from "./Composer";
 import { ProjectDialog } from "./ProjectDialog";
 import { Sidebar } from "./Sidebar";
 import { AgentsPage } from "./AgentsPage";
 import { ConnectionsPage } from "./ConnectionsPage";
+import { ChatPage } from "./ChatPage";
 
-type Page = "agents" | "connections";
+type Page = "agents" | "connections" | "chat";
 import { matchingPreset, PRESETS, type AgentSettings } from "@/lib/agentPresets";
 import { SignInDialog } from "./SignInDialog";
 import { SidePanel } from "./SidePanel";
@@ -32,6 +33,12 @@ function runFromHash(): string | null {
   if (typeof window === "undefined") return null;
   const id = window.location.hash.slice(1);
   return id.startsWith("run_") ? id : null;
+}
+
+function chatFromHash(): string | null {
+  if (typeof window === "undefined") return null;
+  const id = window.location.hash.slice(1);
+  return id.startsWith("chat_") ? id : null;
 }
 
 export function Aviator() {
@@ -48,6 +55,8 @@ export function Aviator() {
   const [showHelp, setShowHelp] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
   const [page, setPage] = useState<Page | null>(null);
+  const [chats, setChats] = useState<ChatSummary[]>([]);
+  const [chatId, setChatId] = useState<string | null>(null);
   const [agentSettings, setAgentSettings] = useState<AgentSettings | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const composer = useRef<ComposerHandle>(null);
@@ -72,6 +81,7 @@ export function Aviator() {
   // ---------- loading ----------
 
   const loadRuns = useCallback(() => api<RunSummary[]>("/api/runs").then(setRuns).catch(() => {}), []);
+  const loadChats = useCallback(() => api<ChatSummary[]>("/api/chats").then(setChats).catch(() => {}), []);
   const refreshStatus = useCallback(
     () =>
       api<AppStatus>("/api/status?refresh=1")
@@ -93,22 +103,27 @@ export function Aviator() {
       })
       .catch(() => {});
     void loadRuns();
+    void loadChats();
     api<{ settings: AgentSettings }>("/api/agents")
       .then((r) => setAgentSettings(r.settings))
       .catch(() => {});
     const onHash = () => {
       const h = window.location.hash.slice(1);
-      setPage(h === "agents" || h === "connections" ? h : null);
+      setPage(h === "agents" || h === "connections" || h === "chat" ? h : chatFromHash() ? "chat" : null);
       setRunId(runFromHash());
+      setChatId(chatFromHash());
     };
     onHash();
     window.addEventListener("hashchange", onHash);
-    const poll = setInterval(loadRuns, 5000);
+    const poll = setInterval(() => {
+      void loadRuns();
+      void loadChats();
+    }, 5000);
     return () => {
       window.removeEventListener("hashchange", onHash);
       clearInterval(poll);
     };
-  }, [loadRuns]);
+  }, [loadRuns, loadChats]);
 
   useEffect(() => {
     if (projectId) storage("aviator.project", projectId);
@@ -119,6 +134,7 @@ export function Aviator() {
     setFilter("all");
     setShowHelp(false);
     setPage(null);
+    setChatId(null);
     const hash = id ? `#${id}` : "";
     if (window.location.hash !== hash) history.replaceState(null, "", hash || window.location.pathname);
   }, []);
@@ -127,7 +143,18 @@ export function Aviator() {
     setPage(which);
     setShowHelp(false);
     setRunId(null);
+    setChatId(null);
     if (window.location.hash !== `#${which}`) history.replaceState(null, "", `#${which}`);
+  }, []);
+
+  /** The general chat page, on one chat or a new one. */
+  const openChat = useCallback((id: string | null) => {
+    setPage("chat");
+    setShowHelp(false);
+    setRunId(null);
+    setChatId(id);
+    const hash = `#${id ?? "chat"}`;
+    if (window.location.hash !== hash) history.replaceState(null, "", hash);
   }, []);
 
   // Live event stream for the selected run (replays history, then streams).
@@ -280,6 +307,9 @@ export function Aviator() {
       case "/connections":
         openPage("connections");
         return true;
+      case "/chat":
+        openChat(null);
+        return true;
       case "/help":
         setShowHelp(true);
         return true;
@@ -314,7 +344,10 @@ export function Aviator() {
     : "Describe a task (ClickUp links work once CLICKUP_API_TOKEN is set)";
   if (!project) placeholder = "Connect your repos first: /new-project";
   if (active && run) {
-    if (runStatus === "waiting_input") {
+    if (runStatus === "waiting_input" && derived.lastBranchSeq > derived.lastQuestionSeq) {
+      activity = { kind: "waiting", text: "Name the branch for this run" };
+      placeholder = "Type a branch name, or ok for the suggested one…";
+    } else if (runStatus === "waiting_input") {
       activity = { kind: "waiting", text: "The researcher is waiting for your answer" };
       placeholder = "Type your answer…";
     } else if (runStatus === "waiting_approval") {
@@ -351,7 +384,7 @@ export function Aviator() {
   );
 
   return (
-    <div className="app">
+    <div className={`app ${page === "chat" ? "no-side" : ""}`}>
       <Sidebar
         status={status}
         projects={projects}
@@ -360,7 +393,8 @@ export function Aviator() {
         selectedRunId={runId}
         onPickProject={(id) => {
           setProjectId(id);
-          selectRun(null);
+          if (page === "chat") openChat(null);
+          else selectRun(null);
         }}
         onEditProject={() => setDialog({ project })}
         onNewProject={() => setDialog({ project: null })}
@@ -372,192 +406,207 @@ export function Aviator() {
         onSignIn={() => setSigningIn(true)}
         onAgents={() => openPage("agents")}
         onConnections={() => openPage("connections")}
+        chats={chats}
+        selectedChatId={chatId}
+        onChat={openChat}
         page={page}
       />
 
-      <main className="main">
-        {status?.demo && (
-          <div className="demo-banner" role="status">
-            DEMO MODE: runs here are a scripted example that ignores your task and never touches your repos. For real runs
-            use Aviator started with <code>npm run dev</code> (port 3210).
-          </div>
-        )}
-        <header className="topbar">
-          <span className="title">{page === "agents" ? "Agents" : page === "connections" ? "Connections" : runId ? (run?.title ?? "…") : "New task"}</span>
-          {runId && runStatus && <span className={`pill ${runStatus}`}>{STATUS_GLYPH[runStatus].label}</span>}
-          {runId && !page && (
-            <div className="filters" role="group" aria-label="Filter by agent">
-              {(["all", ...AGENTS, ...customActors, "orchestrator"] as Filter[]).map((a) => (
-                <button
-                  key={a}
-                  className={`chip ${filter === a ? "on" : ""}`}
-                  style={a !== "all" ? { color: filter === a ? actorColor(a) : undefined } : filter === a ? { color: "var(--text)" } : undefined}
-                  onClick={() => setFilter(a)}
-                >
-                  {a}
-                </button>
-              ))}
-            </div>
-          )}
-        </header>
-
-        <div
-          className="transcript"
-          ref={scroller}
-          onScroll={(e) => {
-            const el = e.currentTarget;
-            stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-          }}
-        >
-          {showHelp && (
-            <div className="card accent" style={{ marginLeft: 0 }}>
-              <h3>Commands</h3>
-              <table className="help-table">
-                <tbody>
-                  {COMMANDS.map((c) => (
-                    <tr key={c.cmd}>
-                      <td>
-                        {c.cmd} <span className="faint">{c.args}</span>
-                      </td>
-                      <td>{c.desc}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <h3>While a run is going</h3>
-              <ul style={{ margin: 0, paddingLeft: 20 }}>
-                <li>Type to steer every running agent; start with <code>@backend</code> or <code>@frontend</code> to talk to one.</li>
-                <li>When the researcher asks a question, your next message is the answer.</li>
-                <li>When a plan is waiting, your next message is feedback and the planner revises it.</li>
-                <li>Press Esc twice to cancel. Nothing is ever committed or pushed.</li>
-              </ul>
-              <div className="actions">
-                <button className="btn" onClick={() => setShowHelp(false)}>
-                  Close
-                </button>
-              </div>
-            </div>
-          )}
-
-          {page === "connections" ? (
-            <ConnectionsPage />
-          ) : page === "agents" ? (
-            <AgentsPage onSaved={setAgentSettings} />
-          ) : !runId ? (
-            <>
-              <div className="welcome">
-                <h1>
-                  <span className="star">✻</span>Welcome to Aviator!
-                </h1>
-                <div className="muted">/help for help · multi-agent coding on top of Claude Code</div>
-                <div style={{ marginTop: 10 }}>{authLine}</div>
-                {project && (
-                  <div className="muted">
-                    project: <span style={{ color: "var(--text)" }}>{project.name}</span> ·{" "}
-                    {project.layout === "monorepo" ? `monorepo ${project.root}` : [project.backendPath, project.frontendPath].filter(Boolean).join(" + ")}
-                  </div>
-                )}
-              </div>
-              <div className="tips">
-                Tips for getting started:
-                <ol>
-                  <li>
-                    {project ? (
-                      <>Repos connected ✓ (edit with <code>/project</code>)</>
-                    ) : (
-                      <>
-                        Connect your repos:{" "}
-                        <button className="btn primary" onClick={() => setDialog({ project: null })}>
-                          /new-project
-                        </button>
-                      </>
-                    )}
-                  </li>
-                  <li>
-                    Describe a task below, or paste a ClickUp link (<code>/clickup &lt;id&gt;</code>)
-                  </li>
-                  <li>Watch the researcher, planner, builders and QA think and work. Answer questions and approve the plan.</li>
-                  <li>Review the before/after report and the diff, then commit and push yourself.</li>
-                </ol>
-                {status?.demo && (
-                  <div className="warn">
-                    Demo mode: runs are scripted and never call Claude or touch git. Unset AVIATOR_DEMO for real runs.
-                  </div>
-                )}
-              </div>
-            </>
-          ) : (
-            <Transcript
-              events={events}
-              filter={filter}
-              status={runStatus}
-              derived={derived}
-              handlers={{
-                onApprove: approve,
-                onRequestChanges: () => {
-                  setNotice({ kind: "info", text: "Type the changes you want in the plan and press Enter." });
-                  composer.current?.focus();
-                },
-              }}
-            />
-          )}
-
-          {!page && dirtyRepo && (
-            <div className="card amber">
-              <h3 className="warn">Your repo has uncommitted changes</h3>
-              <div className="muted">
-                Aviator gives each run its own branch and won&apos;t mix your unsaved work into it. Pick how to continue;
-                the same task then runs again.
-              </div>
-              <div className="actions">
-                <button className="btn solid" onClick={() => retry("stash")}>
-                  Stash my changes &amp; retry
-                </button>
-                <button className="btn" onClick={() => retry("worktree")}>
-                  Use a separate worktree &amp; retry
-                </button>
-                <button className="btn" onClick={() => openFolder(dirtyRepo, "folder")}>
-                  Open folder
-                </button>
-                <button className="btn" onClick={() => openFolder(dirtyRepo, "editor")}>
-                  Open in VS Code
-                </button>
-              </div>
-              <div className="faint" style={{ marginTop: 8, fontSize: 12 }}>
-                Stash keeps your changes safe in git; <code>git stash pop</code> in that folder brings them back. A worktree
-                leaves your checkout untouched, but the agents may need to install dependencies there. You can also type
-                &quot;stash&quot; or &quot;worktree&quot; below.
-              </div>
-            </div>
-          )}
-        </div>
-
-        {notice && (
-          <div style={{ padding: "0 24px" }}>
-            <div className={notice.kind === "error" ? "errors" : "card"} style={{ margin: "0 0 6px", padding: "6px 12px" }}>
-              {notice.text}
-              <button className="btn icon" style={{ float: "right", border: 0 }} onClick={() => setNotice(null)} aria-label="Dismiss">
-                ×
-              </button>
-            </div>
-          </div>
-        )}
-
-        <Composer
-          ref={composer}
-          placeholder={placeholder}
-          activity={activity}
-          cancellable={active}
-          disabled={!project && !runId}
-          hintRight={[project?.name, agentSettings && `agents: ${PRESETS.find((p) => p.id === matchingPreset(agentSettings.agents))?.name ?? "Custom"}`]
-            .filter(Boolean)
-            .join(" · ")}
-          onSubmit={submit}
-          onCancel={cancel}
+      {page === "chat" ? (
+        <ChatPage
+          project={project}
+          chatId={chatId}
+          onOpen={openChat}
+          onChanged={() => void loadChats()}
         />
-      </main>
+      ) : (
+        <main className="main">
+          {status?.demo && (
+            <div className="demo-banner" role="status">
+              DEMO MODE: runs here are a scripted example that ignores your task and never touches your repos. For real runs
+              use Aviator started with <code>npm run dev</code> (port 3210).
+            </div>
+          )}
+          <header className="topbar">
+            <span className="title">{page === "agents" ? "Agents" : page === "connections" ? "Connections" : runId ? (run?.title ?? "…") : "New task"}</span>
+            {runId && runStatus && <span className={`pill ${runStatus}`}>{STATUS_GLYPH[runStatus].label}</span>}
+            {runId && !page && (
+              <div className="filters" role="group" aria-label="Filter by agent">
+                {(["all", ...AGENTS, ...customActors, "orchestrator"] as Filter[]).map((a) => (
+                  <button
+                    key={a}
+                    className={`chip ${filter === a ? "on" : ""}`}
+                    style={a !== "all" ? { color: filter === a ? actorColor(a) : undefined } : filter === a ? { color: "var(--text)" } : undefined}
+                    onClick={() => setFilter(a)}
+                  >
+                    {a}
+                  </button>
+                ))}
+              </div>
+            )}
+          </header>
 
-      <SidePanel run={run} project={project} derived={derived} filter={filter} onFilter={setFilter} onOpen={openFolder} />
+          <div
+            className="transcript"
+            ref={scroller}
+            onScroll={(e) => {
+              const el = e.currentTarget;
+              stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+            }}
+          >
+            {showHelp && (
+              <div className="card accent" style={{ marginLeft: 0 }}>
+                <h3>Commands</h3>
+                <table className="help-table">
+                  <tbody>
+                    {COMMANDS.map((c) => (
+                      <tr key={c.cmd}>
+                        <td>
+                          {c.cmd} <span className="faint">{c.args}</span>
+                        </td>
+                        <td>{c.desc}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <h3>While a run is going</h3>
+                <ul style={{ margin: 0, paddingLeft: 20 }}>
+                  <li>Type to steer every running agent; start with <code>@backend</code> or <code>@frontend</code> to talk to one.</li>
+                  <li>When the researcher asks a question, your next message is the answer.</li>
+                  <li>When a plan is waiting, your next message is feedback and the planner revises it.</li>
+                  <li>Press Esc twice to cancel. Nothing is ever committed or pushed.</li>
+                </ul>
+                <div className="actions">
+                  <button className="btn" onClick={() => setShowHelp(false)}>
+                    Close
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {page === "connections" ? (
+              <ConnectionsPage />
+            ) : page === "agents" ? (
+              <AgentsPage onSaved={setAgentSettings} />
+            ) : !runId ? (
+              <>
+                <div className="welcome">
+                  <h1>
+                    <span className="star">✻</span>Welcome to Aviator!
+                  </h1>
+                  <div className="muted">/help for help · multi-agent coding on top of Claude Code</div>
+                  <div style={{ marginTop: 10 }}>{authLine}</div>
+                  {project && (
+                    <div className="muted">
+                      project: <span style={{ color: "var(--text)" }}>{project.name}</span> ·{" "}
+                      {project.layout === "monorepo" ? `monorepo ${project.root}` : [project.backendPath, project.frontendPath].filter(Boolean).join(" + ")}
+                    </div>
+                  )}
+                </div>
+                <div className="tips">
+                  Tips for getting started:
+                  <ol>
+                    <li>
+                      {project ? (
+                        <>Repos connected ✓ (edit with <code>/project</code>)</>
+                      ) : (
+                        <>
+                          Connect your repos:{" "}
+                          <button className="btn primary" onClick={() => setDialog({ project: null })}>
+                            /new-project
+                          </button>
+                        </>
+                      )}
+                    </li>
+                    <li>
+                      Describe a task below, or paste a ClickUp link (<code>/clickup &lt;id&gt;</code>)
+                    </li>
+                    <li>Watch the researcher, planner, builders and QA think and work. Answer questions and approve the plan.</li>
+                    <li>Review the before/after report and the diff, then commit and push yourself.</li>
+                  </ol>
+                  {status?.demo && (
+                    <div className="warn">
+                      Demo mode: runs are scripted and never call Claude or touch git. Unset AVIATOR_DEMO for real runs.
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <Transcript
+                events={events}
+                filter={filter}
+                status={runStatus}
+                derived={derived}
+                handlers={{
+                  onApprove: approve,
+                  onBranch: (name) => void submit(name),
+                  onRequestChanges: () => {
+                    setNotice({ kind: "info", text: "Type the changes you want in the plan and press Enter." });
+                    composer.current?.focus();
+                  },
+                }}
+              />
+            )}
+
+            {!page && dirtyRepo && (
+              <div className="card amber">
+                <h3 className="warn">Your repo has uncommitted changes</h3>
+                <div className="muted">
+                  Aviator gives each run its own branch and won&apos;t mix your unsaved work into it. Pick how to continue;
+                  the same task then runs again.
+                </div>
+                <div className="actions">
+                  <button className="btn solid" onClick={() => retry("stash")}>
+                    Stash my changes &amp; retry
+                  </button>
+                  <button className="btn" onClick={() => retry("worktree")}>
+                    Use a separate worktree &amp; retry
+                  </button>
+                  <button className="btn" onClick={() => openFolder(dirtyRepo, "folder")}>
+                    Open folder
+                  </button>
+                  <button className="btn" onClick={() => openFolder(dirtyRepo, "editor")}>
+                    Open in VS Code
+                  </button>
+                </div>
+                <div className="faint" style={{ marginTop: 8, fontSize: 12 }}>
+                  Stash keeps your changes safe in git; <code>git stash pop</code> in that folder brings them back. A worktree
+                  leaves your checkout untouched, but the agents may need to install dependencies there. You can also type
+                  &quot;stash&quot; or &quot;worktree&quot; below.
+                </div>
+              </div>
+            )}
+          </div>
+
+          {notice && (
+            <div style={{ padding: "0 24px" }}>
+              <div className={notice.kind === "error" ? "errors" : "card"} style={{ margin: "0 0 6px", padding: "6px 12px" }}>
+                {notice.text}
+                <button className="btn icon" style={{ float: "right", border: 0 }} onClick={() => setNotice(null)} aria-label="Dismiss">
+                  ×
+                </button>
+              </div>
+            </div>
+          )}
+
+          <Composer
+            ref={composer}
+            placeholder={placeholder}
+            activity={activity}
+            cancellable={active}
+            disabled={!project && !runId}
+            hintRight={[project?.name, agentSettings && `agents: ${PRESETS.find((p) => p.id === matchingPreset(agentSettings.agents))?.name ?? "Custom"}`]
+              .filter(Boolean)
+              .join(" · ")}
+            onSubmit={submit}
+            onCancel={cancel}
+          />
+        </main>
+      )}
+
+      {page !== "chat" && (
+        <SidePanel run={run} project={project} derived={derived} filter={filter} onFilter={setFilter} onOpen={openFolder} />
+      )}
 
       {signingIn && <SignInDialog onClose={() => setSigningIn(false)} onSignedIn={() => void refreshStatus()} />}
 
