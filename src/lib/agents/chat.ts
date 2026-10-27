@@ -1,8 +1,9 @@
 import { loadConnections, sdkConfig } from "../connections";
 import { emit, getLive, registerLive, setPlanUsage, takePending, unregisterLive, type LiveRun } from "../runtime";
 import { getChat, getProject, newId, saveChat, saveRunImages } from "../store";
-import { CHAT_AGENT, type Chat, type ImageInput, type Project } from "../types";
-import type { AgentConfig } from "../agentPresets";
+import { CHAT_AGENT, DEFAULT_CHAT_OPTIONS, type Chat, type ChatOptions, type ImageInput, type Project } from "../types";
+import type { Connection } from "../connectionTypes";
+import { EFFORTS } from "../agentPresets";
 import { assertPlanUsage } from "./pipeline";
 import { runAgent, type AgentHost } from "./runAgent";
 
@@ -11,9 +12,35 @@ import { runAgent, type AgentHost } from "./runAgent";
 // folder limits and no command guard. Each message resumes the same session; messages sent
 // while it is working are delivered into the running turn.
 
-const CHAT_CONFIG: AgentConfig = { model: "", effort: "high", maxTurns: 200, showThinking: true };
+/** Chat mode: Claude can read and search the code and the web but not change anything. */
+const READ_ONLY_TOOLS = ["Read", "Glob", "Grep", "WebSearch", "WebFetch", "TodoWrite"];
+const WEB_TOOLS = ["WebSearch", "WebFetch"];
 
-function folders(project: Project): { cwd: string; others: string[] } {
+/** Options sent while a chat is working; its next turn picks them up. */
+const nextOptions = new Map<string, ChatOptions>();
+
+/** Keeps what the composer sent when it's valid, else the chat's current options. */
+export function checkChatOptions(raw: unknown, fallback: ChatOptions = DEFAULT_CHAT_OPTIONS): ChatOptions {
+  const v = (raw && typeof raw === "object" ? raw : {}) as Partial<Record<keyof ChatOptions, unknown>>;
+  const flag = (k: "userSettings" | "webSearch" | "memory") => (typeof v[k] === "boolean" ? (v[k] as boolean) : (fallback[k] ?? DEFAULT_CHAT_OPTIONS[k]));
+  const off = Array.isArray(v.offConnections) ? v.offConnections.filter((c): c is string => typeof c === "string").slice(0, 100) : undefined;
+  return {
+    mode: v.mode === "chat" || v.mode === "code" ? v.mode : fallback.mode,
+    model: typeof v.model === "string" && v.model.length <= 100 ? v.model : fallback.model,
+    effort: EFFORTS.includes(v.effort as ChatOptions["effort"]) ? (v.effort as ChatOptions["effort"]) : fallback.effort,
+    userSettings: flag("userSettings"),
+    webSearch: flag("webSearch"),
+    memory: flag("memory"),
+    offConnections: off ?? fallback.offConnections ?? [],
+  };
+}
+
+/** Which Claude Code settings a chat loads: your ~/.claude ones, and the project's (CLAUDE.md, .claude/). */
+export function chatSettingSources(options: ChatOptions): ("user" | "project" | "local")[] {
+  return [...(options.userSettings ? ["user" as const] : []), ...(options.memory ? ["project" as const, "local" as const] : [])];
+}
+
+export function folders(project: Project): { cwd: string; others: string[] } {
   if (project.layout === "monorepo") {
     if (!project.root) throw new Error("This project has no repo folder set.");
     return { cwd: project.root, others: [] };
@@ -23,7 +50,7 @@ function folders(project: Project): { cwd: string; others: string[] } {
   return { cwd: all[0], others: all.slice(1) };
 }
 
-function systemNote(project: Project, cwd: string, others: string[]): string {
+function systemNote(project: Project, cwd: string, others: string[], connections: Connection[]): string {
   const where =
     project.layout === "monorepo"
       ? [
@@ -35,7 +62,6 @@ function systemNote(project: Project, cwd: string, others: string[]): string {
           project.backendPath ? `- Backend repo: ${project.backendPath}` : "",
           project.frontendPath ? `- Frontend repo: ${project.frontendPath}` : "",
         ];
-  const connections = loadConnections().filter((c) => c.enabled);
   return [
     `# Aviator general chat · project "${project.name}"`,
     "The developer is chatting with you directly, as in the Claude Code CLI. This is not Aviator's task pipeline: work in the folders below as they are (no separate branch), answer questions about the code, and do what they ask.",
@@ -85,11 +111,16 @@ async function converse(chat: Chat, project: Project, text: string, images?: Ima
   const live = registerLive(chat.id);
   const h = host(chat, project, live);
   const { cwd, others } = folders(project);
-  const system = systemNote(project, cwd, others);
-  const connections = loadConnections().filter((c) => c.enabled);
   try {
     let next: { text: string; images?: ImageInput[] } | undefined = { text, images };
     while (next) {
+      // Read each turn, so a change in the composer applies from the next message on.
+      const changed = nextOptions.get(chat.id);
+      nextOptions.delete(chat.id);
+      if (changed) chat.options = changed;
+      const options = { ...DEFAULT_CHAT_OPTIONS, ...chat.options };
+      const connections = loadConnections().filter((c) => c.enabled && !options.offConnections.includes(c.id));
+      const tools = options.mode === "chat" ? READ_ONLY_TOOLS : [];
       const result = await runAgent(h, {
         agent: CHAT_AGENT,
         prompt: next.text,
@@ -97,11 +128,13 @@ async function converse(chat: Chat, project: Project, text: string, images?: Ima
         cwd,
         additionalDirectories: others,
         resume: chat.sessionId,
-        config: CHAT_CONFIG,
-        system,
-        tools: [],
+        config: { model: options.model, effort: options.effort, maxTurns: 200, showThinking: true },
+        system: systemNote(project, cwd, others, connections),
+        tools: options.webSearch ? tools : tools.filter((t) => !WEB_TOOLS.includes(t)),
+        disallowedTools: options.webSearch ? undefined : WEB_TOOLS,
         connections: { servers: Object.fromEntries(connections.map((c) => [c.id, sdkConfig(c)])), check: () => ({ allow: true }) },
         unguarded: true,
+        settingSources: chatSettingSources(options),
       });
       if (result.sessionId) chat.sessionId = result.sessionId;
       saveChat(chat);
@@ -132,7 +165,7 @@ function checkAvailable() {
   assertPlanUsage();
 }
 
-export function startChat(input: { projectId: string; text: string; images?: ImageInput[] }): Chat {
+export function startChat(input: { projectId: string; text: string; images?: ImageInput[]; options?: ChatOptions }): Chat {
   const project = getProject(input.projectId);
   if (!project) throw new Error("Project not found. Set one up with /project first.");
   checkAvailable();
@@ -147,6 +180,7 @@ export function startChat(input: { projectId: string; text: string; images?: Ima
     updatedAt: now,
     tokens: 0,
     agent: { status: "idle", tokens: 0, turns: 0 },
+    options: input.options ?? DEFAULT_CHAT_OPTIONS,
   };
   saveChat(chat);
   emit(chat.id, "user", { kind: "user", text: input.text, images: input.images?.length ? saveRunImages(chat.id, input.images) : undefined });
@@ -155,10 +189,16 @@ export function startChat(input: { projectId: string; text: string; images?: Ima
 }
 
 /** Send a message: into the running turn if Claude is working, otherwise as a new turn. */
-export function sendChat(chatId: string, text: string, images: ImageInput[] = []): "now" | "queued" | "started" {
+export function sendChat(chatId: string, text: string, images: ImageInput[] = [], options?: ChatOptions): "now" | "queued" | "started" {
   const chat = getChat(chatId);
   if (!chat) throw new Error("Chat not found.");
   const live = getLive(chatId);
+  // A running chat holds its own copy, so it gets new options for its next turn instead.
+  if (options && live) nextOptions.set(chatId, options);
+  else if (options) {
+    chat.options = options;
+    saveChat(chat);
+  }
   const project = getProject(chat.projectId);
   if (!live) {
     if (!project) throw new Error("This chat's project was deleted.");

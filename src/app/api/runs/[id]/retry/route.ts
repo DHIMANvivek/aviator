@@ -11,9 +11,10 @@ export const runtime = "nodejs";
 // Retry a run's task, optionally fixing what stopped it first:
 //   stash    — stash uncommitted changes in the project's repos (git stash pop brings them back)
 //   worktree — switch the project to separate worktrees, leaving your checkout as it is
+//   keep     — run on top of your uncommitted changes; they come along onto the new branch
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const body = (await req.json().catch(() => ({}))) as { fix?: "stash" | "worktree" };
+  const body = (await req.json().catch(() => ({}))) as { fix?: "stash" | "worktree" | "keep" };
   const run = getRun(id);
   if (!run) return Response.json({ error: "Run not found." }, { status: 404 });
   const project = getProject(run.projectId);
@@ -51,8 +52,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     } else if (body.fix === "worktree") {
       saveProject({ ...project, isolation: "worktree" });
       notice = "This project now runs in a separate worktree, so your checkout and its uncommitted changes stay exactly as they are.";
+    } else if (body.fix === "keep") {
+      notice =
+        "Continuing with your uncommitted changes: they come along onto the new branch, still uncommitted. The agents leave them alone, and the report shows only what the agents change.";
     }
-    const next = startRun({ projectId: project.id, source: input.source, text: input.text, notice });
+    const next = startRun({ projectId: project.id, source: input.source, text: input.text, notice, keepChanges: body.fix === "keep" });
     return Response.json(next, { status: 201 });
   } catch (err) {
     return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });

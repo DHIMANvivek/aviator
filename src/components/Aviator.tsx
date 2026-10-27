@@ -13,8 +13,8 @@ import {
   VERBS,
   type RunSummary,
 } from "@/lib/client";
-import { AGENTS, type AppStatus, type AviatorEvent, type ChatSummary, type ImageInput, type Project, type Run } from "@/lib/types";
-import { Composer, COMMANDS, type Activity, type ComposerHandle } from "./Composer";
+import { AGENTS, type AppStatus, type AviatorEvent, type ChatSummary, type FileInput, type ImageInput, type Project, type Run } from "@/lib/types";
+import { Composer, COMMANDS, type Activity, type ComposerHandle, type MenuEntry } from "./Composer";
 import { ProjectDialog } from "./ProjectDialog";
 import { Sidebar } from "./Sidebar";
 import { AgentsPage } from "./AgentsPage";
@@ -22,7 +22,7 @@ import { ConnectionsPage } from "./ConnectionsPage";
 import { ChatPage } from "./ChatPage";
 
 type Page = "agents" | "connections" | "chat";
-import { matchingPreset, PRESETS, type AgentSettings } from "@/lib/agentPresets";
+import { matchingPreset, presetAgents, PRESETS, type AgentSettings, type Preset } from "@/lib/agentPresets";
 import { SignInDialog } from "./SignInDialog";
 import { SidePanel } from "./SidePanel";
 import { Transcript, type Filter } from "./Transcript";
@@ -215,13 +215,13 @@ export function Aviator() {
     return false;
   };
 
-  async function startRun(text: string, source?: "clickup" | "prompt", images: ImageInput[] = []): Promise<boolean> {
+  async function startRun(text: string, source?: "clickup" | "prompt", images: ImageInput[] = [], files: FileInput[] = []): Promise<boolean> {
     if (!projectId) {
       setNotice({ kind: "error", text: "Connect a project first: /new-project" });
       return false;
     }
     try {
-      const r = await api<Run>("/api/runs", { method: "POST", json: { projectId, text, source, images } });
+      const r = await api<Run>("/api/runs", { method: "POST", json: { projectId, text, source, images, files } });
       void loadRuns();
       selectRun(r.id);
       return true;
@@ -240,8 +240,8 @@ export function Aviator() {
     }
   }
 
-  /** Retry the selected run's task, after stashing changes or switching to a worktree. */
-  async function retry(fix: "stash" | "worktree"): Promise<boolean> {
+  /** Retry the selected run's task: stash your changes, switch to a worktree, or keep your changes. */
+  async function retry(fix: "stash" | "worktree" | "keep"): Promise<boolean> {
     if (!runId) return false;
     if (
       fix === "stash" &&
@@ -409,26 +409,62 @@ export function Aviator() {
     }
   }
 
-  async function submit(text: string, images: ImageInput[] = []): Promise<boolean> {
+  async function submit(text: string, images: ImageInput[] = [], files: FileInput[] = []): Promise<boolean> {
     setNotice(null);
     stickToBottom.current = true;
-    if (text.startsWith("/") && !images.length) return command(text);
+    if (text.startsWith("/") && !images.length && !files.length) return command(text);
     // After an uncommitted-changes failure, "stash" or "worktree" picks that fix.
     if (dirtyRepo && /\bstash\b/i.test(text)) return retry("stash");
     if (dirtyRepo && /\bwork ?tree\b/i.test(text)) return retry("worktree");
+    if (dirtyRepo && /^\s*(continue|keep|proceed|go ahead)\b/i.test(text)) return retry("keep");
     // "continue", optionally followed by a note for the agents: "continue, I fixed the import myself".
     const cont = canContinue && text.match(/^\s*(continue|resume|go on|carry on)\b[\s.,:;!-]*([\s\S]*)$/i);
     if (cont) return continueRun(runId, [continueNote, cont[2]].filter((t) => t.trim()).join("\n\n"));
     if (active && runId) {
       try {
-        await api(`/api/runs/${runId}/message`, { method: "POST", json: { text, images } });
+        await api(`/api/runs/${runId}/message`, { method: "POST", json: { text, images, files } });
         return true;
       } catch (err) {
         return fail(err);
       }
     }
-    return startRun(text, undefined, images);
+    return startRun(text, undefined, images, files);
   }
+
+  /** Switch every agent's effort to a preset, like the Agents page; runs use it from their next agent on. */
+  async function applyPreset(p: Preset) {
+    if (!agentSettings) return;
+    try {
+      const r = await api<{ settings: AgentSettings }>("/api/agents", { method: "PUT", json: { agents: presetAgents(p, agentSettings.agents) } });
+      setAgentSettings(r.settings);
+    } catch (err) {
+      fail(err);
+    }
+  }
+
+  const preset = agentSettings ? matchingPreset(agentSettings.agents) : undefined;
+  const taskMenu: MenuEntry[] = [
+    {
+      kind: "submenu",
+      icon: "⚙️",
+      label: "Agents",
+      title: "Effort preset for all agents, saved for later runs too",
+      entries: [
+        ...PRESETS.map((p) => ({
+          kind: "item" as const,
+          icon: "·",
+          label: p.name,
+          title: p.description,
+          checked: preset === p.id,
+          stayOpen: true,
+          onSelect: () => void applyPreset(p),
+        })),
+        { kind: "divider" },
+        { kind: "item", icon: "⚙️", label: "Agent settings…", title: "Model, effort, prompts and custom agents", onSelect: () => openPage("agents") },
+      ],
+    },
+    { kind: "item", icon: "⚡", label: "Connections…", title: "MCP tools your agents can use", onSelect: () => openPage("connections") },
+  ];
 
   // ---------- composer state ----------
 
@@ -514,6 +550,7 @@ export function Aviator() {
           chatId={chatId}
           onOpen={openChat}
           onChanged={() => void loadChats()}
+          onOpenConnections={() => openPage("connections")}
         />
       ) : (
         <main className="main">
@@ -691,8 +728,7 @@ export function Aviator() {
               <div className="card amber">
                 <h3 className="warn">Your repo has uncommitted changes</h3>
                 <div className="muted">
-                  Aviator gives each run its own branch and won&apos;t mix your unsaved work into it. Pick how to continue;
-                  the same task then runs again.
+                  Aviator gives each run its own branch. Pick how to handle your unsaved work; the same task then runs again.
                 </div>
                 <div className="actions">
                   <button className="btn solid" onClick={() => retry("stash")}>
@@ -700,6 +736,9 @@ export function Aviator() {
                   </button>
                   <button className="btn" onClick={() => retry("worktree")}>
                     Use a separate worktree &amp; retry
+                  </button>
+                  <button className="btn" onClick={() => retry("keep")} title="Your changes come along onto the new branch, still uncommitted">
+                    Continue with my changes
                   </button>
                   {!status?.remoteDevice && (
                     <>
@@ -714,8 +753,9 @@ export function Aviator() {
                 </div>
                 <div className="faint" style={{ marginTop: 8, fontSize: 12 }}>
                   Stash keeps your changes safe in git; <code>git stash pop</code> in that folder brings them back. A worktree
-                  leaves your checkout untouched, but the agents may need to install dependencies there. You can also type
-                  &quot;stash&quot; or &quot;worktree&quot; below.
+                  leaves your checkout untouched, but the agents may need to install dependencies there. Continuing takes your
+                  changes along onto the new branch, still uncommitted; the agents leave them alone and the report shows only
+                  their own changes. You can also type &quot;stash&quot;, &quot;worktree&quot; or &quot;continue&quot; below.
                 </div>
               </div>
             )}
@@ -743,6 +783,8 @@ export function Aviator() {
               .join(" · ")}
             onSubmit={submit}
             onCancel={cancel}
+            projectId={project?.id}
+            menu={taskMenu}
           />
         </main>
       )}

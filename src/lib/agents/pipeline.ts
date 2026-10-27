@@ -59,6 +59,8 @@ export type StartRunInput = {
   images?: ImageInput[];
   /** Continuing: what you told the agents when you pressed Continue. */
   note?: string;
+  /** Branch mode: run on top of your uncommitted changes instead of asking you to stash them. */
+  keepChanges?: boolean;
 };
 
 const MAX_QA_ATTEMPTS = 3;
@@ -381,13 +383,13 @@ function projectRepos(project: Project): string[] {
 }
 
 /** Ask the developer what to call the branch, suggesting a short name, until git accepts it. */
-async function chooseBranch(ctx: RunContext): Promise<string> {
+async function chooseBranch(ctx: RunContext, keepChanges = false): Promise<string> {
   const { run, project, live } = ctx;
   const suggested = suggestBranch(run.brief.title, run.brief.clickupId);
   if (run.demo) return suggested;
   const repos = projectRepos(project);
   // Fail before asking when the checkout can't be switched anyway.
-  if (project.isolation === "branch") {
+  if (project.isolation === "branch" && !keepChanges) {
     for (const repo of repos) if (await isDirty(repo).catch(() => false)) throw new DirtyRepoError(repo);
   }
   let problem: string | undefined;
@@ -403,13 +405,13 @@ async function chooseBranch(ctx: RunContext): Promise<string> {
   }
 }
 
-async function prepareWorkspace(ctx: RunContext, branch: string): Promise<Workspace> {
+async function prepareWorkspace(ctx: RunContext, branch: string, keepChanges = false): Promise<Workspace> {
   const { project, run } = ctx;
   const worktree = (role: string) => path.join(dataDir, "worktrees", run.id, role);
   const prepare = async (role: "monorepo" | BuilderName, repoPath: string) =>
     run.demo
       ? { role, originalPath: repoPath, workPath: repoPath, branch, baseCommit: "demo" }
-      : prepareRepo({ role, repoPath, branch, isolation: project.isolation, worktreeDir: worktree(role) });
+      : prepareRepo({ role, repoPath, branch, isolation: project.isolation, worktreeDir: worktree(role), keepChanges });
 
   if (project.layout === "monorepo") {
     if (!project.root) throw new Error("This monorepo project has no repo root set.");
@@ -584,7 +586,14 @@ function builderPrompt(agent: BuilderName, run: Run, plan: PlanOutput, ws: Works
 }
 
 function changesHint(run: Run): string {
-  return run.repos.map((r) => `- \`git -C ${r.workPath} diff ${r.baseCommit}\` and \`git -C ${r.workPath} status\``).join("\n");
+  const hints = run.repos.map((r) => `- \`git -C ${r.workPath} diff ${r.baseCommit}\` and \`git -C ${r.workPath} status\``);
+  const kept = run.repos.filter((r) => r.keptChanges).map((r) => r.workPath);
+  if (kept.length) {
+    hints.push(
+      `\nThe developer's own uncommitted changes were already in ${kept.join(" and ")} when this run started. They are not part of this task: leave them as they are, and don't report them as the builders' work. \`git diff\` against the commit above shows only this run's changes to tracked files; files the developer had added may show as deleted there, which is expected.`,
+    );
+  }
+  return hints.join("\n");
 }
 
 /** Check results Aviator got just now, for QA; failures keep the end of their output. */
@@ -763,9 +772,9 @@ async function execute(ctx: RunContext, input: StartRunInput, resumeFrom?: Stage
 
       // 2. Branch (or worktree) per repo so the agents' work stays isolated; you name it
       ctx.stage("prepare", "Naming the branch");
-      const branch = await chooseBranch(ctx);
+      const branch = await chooseBranch(ctx, input.keepChanges);
       ctx.stage("prepare", "Creating a branch");
-      ctx.ws = await prepareWorkspace(ctx, branch);
+      ctx.ws = await prepareWorkspace(ctx, branch, input.keepChanges);
       ctx.say(
         run.repos
           .map((r) => `- Branch \`${r.branch}\` ${r.workPath === r.originalPath ? "in" : "as a worktree of"} \`${r.originalPath}\``)

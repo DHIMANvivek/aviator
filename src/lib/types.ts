@@ -70,6 +70,11 @@ export type RunRepo = {
   workPath: string;
   branch: string;
   baseCommit: string;
+  /**
+   * The run started on top of your uncommitted changes; `baseCommit` is a snapshot of them,
+   * not a commit on any branch.
+   */
+  keptChanges?: boolean;
 };
 
 export type AgentState = {
@@ -241,6 +246,9 @@ export type StepOutput = { summary: string; findings: StepFinding[] };
 /** A screenshot or image attached in the chat box, sent to agents as image content. */
 export type ImageInput = { mediaType: "image/png" | "image/jpeg" | "image/gif" | "image/webp"; data: string; name?: string };
 
+/** Any other file added in the chat box (PDF, text, code…), base64. Saved to disk for Claude to read. */
+export type FileInput = { name: string; data: string };
+
 /**
  * A general chat: one Claude Code session in the project's own folders, outside the task
  * pipeline. No branch, no folder limits and no command guard.
@@ -256,6 +264,34 @@ export type Chat = {
   tokens: number;
   cachedTokens?: number;
   agent: AgentState;
+  /** Picked in the composer; each new turn uses the latest. Missing on older chats. */
+  options?: ChatOptions;
+};
+
+/**
+ * "chat" answers and reads the code without changing anything; "code" has Claude Code's full
+ * tool set. `userSettings` loads your ~/.claude plugins, MCP servers and settings, which can
+ * add a lot to every turn; `memory` loads CLAUDE.md and the project's .claude settings and skills.
+ */
+export type ChatOptions = {
+  mode: "chat" | "code";
+  model: string;
+  effort: Effort;
+  userSettings: boolean;
+  webSearch: boolean;
+  memory: boolean;
+  /** Ids of your connections switched off for this chat. */
+  offConnections: string[];
+};
+
+export const DEFAULT_CHAT_OPTIONS: ChatOptions = {
+  mode: "code",
+  model: "",
+  effort: "medium",
+  userSettings: false,
+  webSearch: true,
+  memory: true,
+  offConnections: [],
 };
 
 export type ChatSummary = Pick<Chat, "id" | "projectId" | "title" | "createdAt" | "updatedAt" | "tokens"> & { busy: boolean };

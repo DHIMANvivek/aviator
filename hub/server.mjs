@@ -669,12 +669,28 @@ async function handle(req, res) {
 }
 
 // ---------- admin commands (run on the hub's machine instead of starting it) ----------
+//   npm run hub -- create-user <email>        add an account with a random password
 //   npm run hub -- users                      list accounts and their computers
 //   npm run hub -- reset-password <email>     set a new random password and sign that account out everywhere
 //   npm run hub -- sign-out <email>           sign that account out on every device (password unchanged)
 //   npm run hub -- delete-user <email>        remove an account, its sessions and its computers
 
 const [command, commandArg] = process.argv.slice(2);
+if (command === "create-user") {
+  const email = String(commandArg ?? "").trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    console.error("[hub] Usage: npm run hub -- create-user <email>");
+    process.exit(1);
+  }
+  if (q.userByEmail.get(email)) {
+    console.error(`[hub] ${email} already has an account. For a new password: npm run hub -- reset-password ${email}`);
+    process.exit(1);
+  }
+  const password = crypto.randomBytes(9).toString("base64url");
+  q.addUser.run(randomId("user"), email, await hashPassword(password), Date.now());
+  console.log(`[hub] Created ${email}. Password: ${password}`);
+  process.exit(0);
+}
 if (command === "users") {
   for (const user of db.prepare("SELECT * FROM users ORDER BY created_at").all()) {
     const computers = q.runnersOf.all(user.id).map((r) => r.name);
@@ -718,7 +734,7 @@ if (command === "delete-user") {
   process.exit(0);
 }
 if (command) {
-  console.error(`[hub] Unknown command “${command}”. Commands: users, sign-out <email>, reset-password <email>, delete-user <email>. With none, the hub starts.`);
+  console.error(`[hub] Unknown command “${command}”. Commands: create-user <email>, users, sign-out <email>, reset-password <email>, delete-user <email>. With none, the hub starts.`);
   process.exit(1);
 }
 

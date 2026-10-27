@@ -77,10 +77,14 @@ export type PreparedRequest = AgentRequest & {
   /** Custom agents it can call on demand, by id. */
   helpers?: Record<string, Helper>;
   /**
-   * General chat: Claude Code's full default tool set with every permission check skipped
-   * (no folder limits, no command guard) and your user settings loaded. `tools` is ignored.
+   * General chat: every permission check skipped (no folder limits, no command guard). `tools`
+   * narrows the built-in tools when not empty; empty means Claude Code's full default set.
    */
   unguarded?: boolean;
+  /** General chat: which Claude Code settings to load (your ~/.claude ones, the project's). */
+  settingSources?: ("user" | "project" | "local")[];
+  /** General chat: built-in tools to switch off, e.g. web search. */
+  disallowedTools?: string[];
 };
 
 export type AgentResult = {
@@ -295,12 +299,17 @@ export async function runAgent(host: AgentHost, req: PreparedRequest): Promise<A
         systemPrompt: { type: "preset", preset: "claude_code", append: req.system },
         // Loads the repo's CLAUDE.md so agents follow the project's own conventions; the
         // general chat also loads your own Claude Code settings, like the CLI does.
-        settingSources: req.unguarded ? ["user", "project", "local"] : ["project"],
+        settingSources: req.unguarded ? (req.settingSources ?? ["user", "project", "local"]) : ["project"],
         // The general chat behaves like the CLI; pipeline agents get Aviator's context limits.
         settings: req.unguarded ? undefined : CONTEXT_LIMITS,
         mcpServers,
         ...(req.unguarded
-          ? { permissionMode: "bypassPermissions" as const, allowDangerouslySkipPermissions: true }
+          ? {
+            ...(req.tools.length ? { tools: req.tools } : {}),
+            disallowedTools: req.disallowedTools,
+            permissionMode: "bypassPermissions" as const,
+            allowDangerouslySkipPermissions: true,
+          }
           : {
             // On Windows, Claude Code may run commands through PowerShell instead of Git Bash.
             tools: process.platform === "win32" && builtInTools.includes("Bash") ? [...builtInTools, "PowerShell"] : builtInTools,

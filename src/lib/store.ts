@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { AGENTS, type AgentName, type AgentState, type Chat, type ImageInput, type Project, type Run } from "./types";
+import { AGENTS, type AgentName, type AgentState, type Chat, type FileInput, type ImageInput, type Project, type Run } from "./types";
 
 // Plain JSON files: easy to inspect, back up, or delete by hand.
 //   .aviator/projects.json
@@ -189,6 +189,40 @@ export function saveRunImages(runId: string, images: ImageInput[]): string[] {
     fs.writeFileSync(path.join(dir, name), Buffer.from(img.data, "base64"));
     return name;
   });
+}
+
+// ---------- other files attached in the chat box ----------
+
+const MAX_FILE_BYTES = 10 * 1024 * 1024;
+const MAX_FILES = 6;
+
+/**
+ * Validates attached files, saves them under .aviator/uploads and adds their paths to the
+ * message, so Claude reads them with its Read tool (which handles PDFs, notebooks and text).
+ */
+export function attachFiles(text: string, value: unknown): { text: string; error?: string } {
+  if (value == null || (Array.isArray(value) && !value.length)) return { text };
+  if (!Array.isArray(value)) return { text, error: "Files must be a list." };
+  if (value.length > MAX_FILES) return { text, error: `Attach at most ${MAX_FILES} files at a time.` };
+  const files: FileInput[] = [];
+  for (const v of value as Partial<FileInput>[]) {
+    if (typeof v?.name !== "string" || typeof v.data !== "string") return { text, error: "A file couldn't be read." };
+    if (Buffer.byteLength(v.data, "base64") > MAX_FILE_BYTES) return { text, error: `${v.name} is larger than 10 MB.` };
+    files.push({ name: v.name, data: v.data });
+  }
+  const dir = path.join(dataDir, "uploads", newId("upload"));
+  fs.mkdirSync(dir, { recursive: true });
+  const taken = new Set<string>();
+  const paths = files.map((f) => {
+    let name = path.basename(f.name).replace(/[^\w.-]+/g, "_").replace(/^\.+/, "").slice(0, 100) || "file";
+    while (taken.has(name)) name = `_${name}`;
+    taken.add(name);
+    const file = path.join(dir, name);
+    fs.writeFileSync(file, Buffer.from(f.data, "base64"));
+    return file;
+  });
+  const list = paths.map((p) => `- ${p}`).join("\n");
+  return { text: `${text}\n\n[Attached files: read them with the Read tool]\n${list}`.trim() };
 }
 
 export function readRunImage(runId: string, name: string): { data: Buffer; type: string } | null {
