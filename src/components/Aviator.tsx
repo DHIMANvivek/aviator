@@ -701,12 +701,16 @@ export function Aviator() {
                   <button className="btn" onClick={() => retry("worktree")}>
                     Use a separate worktree &amp; retry
                   </button>
-                  <button className="btn" onClick={() => openFolder(dirtyRepo, "folder")}>
-                    Open folder
-                  </button>
-                  <button className="btn" onClick={() => openFolder(dirtyRepo, "editor")}>
-                    Open in VS Code
-                  </button>
+                  {!status?.remoteDevice && (
+                    <>
+                      <button className="btn" onClick={() => openFolder(dirtyRepo, "folder")}>
+                        Open folder
+                      </button>
+                      <button className="btn" onClick={() => openFolder(dirtyRepo, "editor")}>
+                        Open in VS Code
+                      </button>
+                    </>
+                  )}
                 </div>
                 <div className="faint" style={{ marginTop: 8, fontSize: 12 }}>
                   Stash keeps your changes safe in git; <code>git stash pop</code> in that folder brings them back. A worktree
@@ -744,7 +748,14 @@ export function Aviator() {
       )}
 
       {page !== "chat" && (
-        <SidePanel run={run} project={project} derived={derived} filter={filter} onFilter={setFilter} onOpen={openFolder} />
+        <SidePanel
+          run={run}
+          project={project}
+          derived={derived}
+          filter={filter}
+          onFilter={setFilter}
+          onOpen={status?.remoteDevice ? undefined : openFolder}
+        />
       )}
 
       {signingIn && <SignInDialog onClose={() => setSigningIn(false)} onSignedIn={() => void refreshStatus()} />}
@@ -753,6 +764,7 @@ export function Aviator() {
         <ProjectDialog
           project={dialog.project}
           demo={!!status?.demo}
+          browseInPage={!!status?.remoteDevice}
           onClose={() => setDialog(null)}
           onSaved={(p) => {
             setProjects((prev) => [...prev.filter((x) => x.id !== p.id), p]);

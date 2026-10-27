@@ -8,6 +8,8 @@
     "demo": "node scripts/demo.mjs",
     "build": "next build",
     "start": "next start -p 3210",
+    "hub": "node hub/server.mjs",
+    "runner": "node runner/aviator-runner.mjs",
     "typecheck": "tsc --noEmit",
     "login": "node scripts/claude.mjs auth login --claudeai",
     "auth:status": "node scripts/claude.mjs auth status",
@@ -20,12 +22,14 @@
     "react-dom": "^19.3.1",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
+    "ws": "^8.22.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
+    "@types/ws": "^8.18.2",
     "typescript": "^7.0.2"
   },
   "license": "MIT",

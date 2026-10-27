@@ -215,6 +215,13 @@ export type AppStatus = {
   hasClickUp: boolean;
   /** Last plan usage Claude reported to any agent; unknown until the first run. */
   planUsage?: PlanUsage;
+  /** Opened through an Aviator hub (hub/server.mjs) rather than directly. */
+  viaHub?: boolean;
+  /**
+   * The browser is probably not on this computer (the hub saw a different address), so windows
+   * Aviator opens here (folder picker, file manager, VS Code) would appear where nobody is looking.
+   */
+  remoteDevice?: boolean;
 };
 
 /** Empty model = whatever Claude Code uses by default for your plan. */

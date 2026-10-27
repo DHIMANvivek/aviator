@@ -12,6 +12,9 @@ export async function GET(req: Request) {
     auth: await checkAuth(force),
     hasClickUp: !!process.env.CLICKUP_API_TOKEN,
     planUsage: getPlanUsage(),
+    // Set by the hub on requests it forwards (hub/server.mjs); only used to choose what to show.
+    viaHub: req.headers.get("x-aviator-hub") === "1",
+    remoteDevice: req.headers.get("x-aviator-remote-device") === "1",
   };
   return Response.json(status);
 }

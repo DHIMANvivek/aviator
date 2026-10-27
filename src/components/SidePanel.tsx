@@ -14,7 +14,8 @@ const ROLE: Record<AgentName, string> = {
   reporter: "before/after report",
 };
 
-function OpenButtons({ path, onOpen }: { path: string; onOpen: (path: string, how: "folder" | "editor") => void }) {
+function OpenButtons({ path, onOpen }: { path: string; onOpen?: (path: string, how: "folder" | "editor") => void }) {
+  if (!onOpen) return null;
   return (
     <span className="open-btns">
       <button className="link-btn" onClick={() => onOpen(path, "folder")} title={`Open ${path}`}>
@@ -40,7 +41,8 @@ export function SidePanel({
   derived: Derived;
   filter: Filter;
   onFilter: (f: Filter) => void;
-  onOpen: (path: string, how: "folder" | "editor") => void;
+  /** Left out when the browser isn't on the computer running Aviator. */
+  onOpen?: (path: string, how: "folder" | "editor") => void;
 }) {
   const projectRepos: [string, string][] = project
     ? project.layout === "monorepo"

@@ -1122,6 +1122,69 @@ pre.block {
   margin-top: 2px;
 }
 
+/* in-page folder browser (ProjectDialog, from devices other than the one running Aviator) */
+.folder-browser .crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin: 10px 0 8px;
+  font-size: 12px;
+}
+.folder-browser .crumbs .chip {
+  margin-left: 6px;
+}
+.folder-list {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg-input);
+  max-height: min(50vh, 420px);
+  overflow-y: auto;
+  margin-bottom: 10px;
+}
+.folder-list[aria-busy="true"] {
+  opacity: 0.6;
+}
+.folder-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  padding: 6px 10px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.folder-row:last-child {
+  border-bottom: 0;
+}
+.folder-row:hover {
+  background: var(--bg-hover);
+}
+.folder-row .chip {
+  margin-left: auto;
+}
+.folder-empty {
+  padding: 10px;
+}
+.folder-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+.folder-tools select {
+  background: var(--bg-input);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 4px 6px;
+}
+
 .demo-banner {
   background: var(--amber);
   color: #1a1a19;

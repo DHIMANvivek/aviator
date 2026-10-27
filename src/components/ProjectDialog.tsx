@@ -5,6 +5,9 @@ import { api, ApiError } from "@/lib/client";
 import type { ProjectSuggestion } from "@/lib/agents/configure";
 import type { RepoCandidate, RepoInspection } from "@/lib/inspectRepo";
 import type { Project } from "@/lib/types";
+import { FolderBrowser } from "./FolderBrowser";
+
+type FolderKey = "root" | "frontendPath" | "backendPath" | "frontendDirs" | "backendDirs";
 
 const splitDirs = (s: string) =>
   s
@@ -49,12 +52,15 @@ function toForm(p?: Project | null): Form {
 export function ProjectDialog({
   project,
   demo,
+  browseInPage,
   onClose,
   onSaved,
   onDeleted,
 }: {
   project: Project | null;
   demo: boolean;
+  /** Pick folders in the page rather than the native dialog, which opens on the computer running Aviator. */
+  browseInPage: boolean;
   onClose: () => void;
   onSaved: (p: Project) => void;
   onDeleted: (id: string) => void;
@@ -68,6 +74,8 @@ export function ProjectDialog({
   const [saving, setSaving] = useState(false);
   const set = <K extends keyof Form>(key: K, value: Form[K]) => setF((prev) => ({ ...prev, [key]: value }));
   const [picking, setPicking] = useState<string | null>(null);
+  type Browsing = { key: FolderKey; prompt: string; inside?: string; start?: string };
+  const [browsing, setBrowsing] = useState<Browsing | null>(null);
   const [info, setInfo] = useState<RepoInspection | null>(null);
   const [note, setNote] = useState("");
   const inspected = useRef("");
@@ -198,36 +206,57 @@ export function ProjectDialog({
       .sort((a, b) => rank(a) - rank(b) || a.path.localeCompare(b.path));
   }
 
+  /** With `inside`, `chosen` is relative to that repo and joins a comma-separated list. */
+  function applyFolder(key: FolderKey, chosen: string, inside?: string) {
+    if (key === "root") inspectRoot(chosen, true);
+    if (inside) userEdited.current = true;
+    setF((prev) => {
+      if (inside) {
+        const list = prev[key].split(",").map((s) => s.trim()).filter(Boolean);
+        return { ...prev, [key]: list.includes(chosen) ? prev[key] : [...list, chosen].join(", ") };
+      }
+      const folderName = chosen.split(/[\\/]/).filter(Boolean).pop() ?? "";
+      return { ...prev, [key]: chosen, name: prev.name.trim() ? prev.name : folderName };
+    });
+  }
+
   /**
-   * Opens the system folder picker (on the machine running Aviator). With `inside`, the folder
-   * must be within that repo and is added to a comma-separated list as a relative path.
+   * Opens the system folder picker (on the machine running Aviator), or the in-page browser when
+   * you're on another device or that machine has no picker. With `inside`, the folder must be
+   * within that repo and is added to a comma-separated list as a relative path.
    */
-  async function pick(key: "root" | "frontendPath" | "backendPath" | "frontendDirs" | "backendDirs", prompt: string, inside?: string) {
-    setPicking(key);
+  async function pick(key: FolderKey, prompt: string, inside?: string) {
     setErrors([]);
+    const current = inside ? undefined : f[key].trim() || undefined;
+    if (browseInPage) {
+      setBrowsing({ key, prompt, inside, start: inside ?? current });
+      return;
+    }
+    setPicking(key);
     try {
-      const current = inside ? undefined : f[key].trim() || undefined;
       const res = await api<{ path?: string; cancelled?: boolean }>("/api/pick-folder", {
         method: "POST",
         json: { prompt, inside, startIn: current },
       });
-      const chosen = res.path;
-      if (!chosen) return;
-      if (key === "root") inspectRoot(chosen, true);
-      if (inside) userEdited.current = true;
-      setF((prev) => {
-        if (inside) {
-          const list = prev[key].split(",").map((s) => s.trim()).filter(Boolean);
-          return { ...prev, [key]: list.includes(chosen) ? prev[key] : [...list, chosen].join(", ") };
-        }
-        const folderName = chosen.split(/[\\/]/).filter(Boolean).pop() ?? "";
-        return { ...prev, [key]: chosen, name: prev.name.trim() ? prev.name : folderName };
-      });
+      if (res.path) applyFolder(key, res.path, inside);
     } catch (err) {
-      setErrors([(err as Error).message]);
+      if (/^Pick a folder inside/.test((err as Error).message)) setErrors([(err as Error).message]);
+      else setBrowsing({ key, prompt, inside, start: inside ?? current });
     } finally {
       setPicking(null);
     }
+  }
+
+  function browsed(chosen: string) {
+    if (!browsing) return;
+    const { key, inside } = browsing;
+    setBrowsing(null);
+    if (!inside) return applyFolder(key, chosen);
+    const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
+    const root = norm(inside);
+    const picked = norm(chosen);
+    if (picked !== root && !picked.startsWith(`${root}/`)) return setErrors([`Pick a folder inside ${inside}.`]);
+    applyFolder(key, picked.slice(root.length + 1) || ".", inside);
   }
 
   async function save() {
@@ -494,6 +523,9 @@ export function ProjectDialog({
           </button>
         </div>
       </div>
+      {browsing && (
+        <FolderBrowser title={browsing.prompt} start={browsing.start} onPick={browsed} onClose={() => setBrowsing(null)} />
+      )}
     </div>
   );
 }

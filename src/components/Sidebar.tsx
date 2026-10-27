@@ -158,6 +158,14 @@ export function Sidebar(p: Props) {
           <span className={p.status?.hasClickUp ? "ok" : "faint"}>●</span> ClickUp{" "}
           {p.status?.hasClickUp ? "connected" : "not configured"}
         </span>
+        {p.status?.viaHub && (
+          <span>
+            <span className="ok">●</span> Through your hub ·{" "}
+            <a className="link-btn" href="/_hub/computers">
+              computers &amp; sign out
+            </a>
+          </span>
+        )}
       </div>
     </aside>
   );

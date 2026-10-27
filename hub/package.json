@@ -1,0 +1,15 @@
+{
+  "name": "aviator-hub",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Public front door for Aviator: sign-in, pairing, and routing each user to their own computer.",
+  "type": "module",
+  "engines": { "node": ">=22.5" },
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.22.0"
+  },
+  "license": "MIT"
+}

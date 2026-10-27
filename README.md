@@ -69,6 +69,53 @@ Works on macOS, Windows and Linux (Node 20+, git).
   guarded by the same safety rules). `npm run demo` works in cmd and PowerShell.
 - **Linux**: the right Claude Code build (glibc or musl) is picked automatically.
 
+## One address for everyone: the hub
+
+Each person runs Aviator on their own computer; a small hub server gives everyone the same link
+and sends each signed-in person to *their* computer. Nobody's code touches the hub or anyone
+else's machine.
+
+```
+                        https://aviator.example.com   (same link for everyone)
+                                     │
+ Alice's browser ──► ┌───────────────┴───────────────┐ ◄── outbound WebSocket ── Alice's PC: Aviator + runner
+                     │ hub/server.mjs                │
+ Bob's browser   ──► │ sign-in · user → computer     │ ◄── outbound WebSocket ── Bob's PC:   Aviator + runner
+                     └───────────────────────────────┘
+```
+
+**Run the hub** (any always-on Node 22.5+ host, not serverless: it holds connections open):
+
+```bash
+npm run hub                     # http://localhost:8080; or deploy hub/ with its Dockerfile / fly.toml
+```
+
+Settings: `HUB_PUBLIC_URL` (e.g. `https://aviator.example.com`), `HUB_TRUST_PROXY=1` behind a TLS
+proxy, `HUB_DATA_DIR` (SQLite file, default `./.hub`), `HUB_ALLOWED_EMAILS` to limit sign-ups.
+
+**Add a computer**: sign up on the hub, click **Add my computer**, and run the command it shows in
+an Aviator checkout on that computer:
+
+```bash
+npm run runner -- pair K7Q-4XM --hub https://aviator.example.com   # once; saves ~/.aviator/runner.json
+npm run runner                                                     # afterwards: builds if needed, starts, connects
+npm run runner -- install-service                                  # optional: start at login (systemd, launchd, Task Scheduler)
+```
+
+The runner starts Aviator as a production build on `127.0.0.1:3210`, opens an outbound connection
+to the hub (no open ports, no ngrok) and replays the hub's requests against it, streaming answers
+back (live run updates included). Each person signs in to Claude on their own computer; for other
+people, use API-key auth (see above).
+
+- **Several computers**: each is listed on the hub's **Your computers** page; pick one per device.
+- **From your phone**: when the hub sees the browser on a different address than the computer,
+  **Choose folder…** opens an in-page folder browser instead of the native dialog, and the
+  "open folder" / "VS Code" buttons are hidden (they'd open on the computer's screen).
+- **Privacy**: the hub stores accounts and which computer belongs to whom. Transcripts and diffs
+  pass through it (encrypted in transit with HTTPS) but are never saved there.
+- Removing a computer on the hub disconnects it right away; `npm run runner -- unpair` forgets the
+  link on the computer.
+
 ## Pipeline
 
 ```
@@ -147,6 +194,8 @@ and builders as images (and to running agents when you steer), and show in the t
 | `src/lib/store.ts` | JSON storage in `.aviator/` (projects, runs, event logs for replay) |
 | `src/components/*` | Claude Code-style UI |
 | `scripts/claude.mjs` | Runs the SDK's bundled Claude Code binary (login, status, setup-token) |
+| `hub/server.mjs` | The hub: accounts, pairing codes, user → computer routing over WebSockets |
+| `runner/aviator-runner.mjs` | The runner: pairs this computer, starts Aviator, relays the hub's requests to it |
 
 ## Configuration (`.env.local`, all optional)
 
