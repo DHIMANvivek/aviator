@@ -29,6 +29,10 @@ export function slugify(text: string): string {
   );
 }
 
+export async function currentBranch(repo: string): Promise<string> {
+  return (await git(repo, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+}
+
 /** A short default branch name: the first few words of the title, e.g. aviator/add-photo-upload. */
 export function suggestBranch(title: string, clickupId?: string): string {
   const words = slugify(title).split("-").filter(Boolean);

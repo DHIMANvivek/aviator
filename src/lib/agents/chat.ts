@@ -59,12 +59,14 @@ function host(chat: Chat, project: Project, live: LiveRun): AgentHost {
       saveChat(chat);
       emit(chat.id, "orchestrator", { kind: "agent", agent: CHAT_AGENT, state: { ...chat.agent } });
     },
-    addUsage: (_agent, tokens, turns) => {
+    addUsage: (_agent, tokens, turns, cached = 0) => {
       chat.agent.tokens += tokens;
+      chat.agent.cachedTokens = (chat.agent.cachedTokens ?? 0) + cached;
       chat.agent.turns += turns;
       chat.tokens += tokens;
+      chat.cachedTokens = (chat.cachedTokens ?? 0) + cached;
       saveChat(chat);
-      emit(chat.id, "orchestrator", { kind: "usage", tokens: chat.tokens });
+      emit(chat.id, "orchestrator", { kind: "usage", tokens: chat.tokens, cached: chat.cachedTokens });
     },
     planUsage: (usage) => {
       setPlanUsage(usage);

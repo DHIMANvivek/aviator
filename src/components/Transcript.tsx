@@ -6,6 +6,7 @@ import { actorColor, FINAL, tokens, type Derived } from "@/lib/client";
 import type { Actor, AviatorEvent, RunStatus } from "@/lib/types";
 import { Markdown } from "./Markdown";
 import { DiffView, ReportCard } from "./Report";
+import { ImageViewer } from "./ImageViewer";
 
 type ToolUse = Extract<AviatorEvent, { kind: "tool_use" }>;
 type ToolResult = Extract<AviatorEvent, { kind: "tool_result" }>;
@@ -191,23 +192,7 @@ function EventRow({
         </div>
       );
     case "user":
-      return (
-        <div className="user-msg">
-          <span className="caret">&gt;</span>
-          <span>
-            {e.text}
-            {e.images?.length ? (
-              <span className="user-images">
-                {e.images.map((name) => (
-                  <a key={name} href={`/api/runs/${e.runId}/images/${name}`} target="_blank" rel="noreferrer" title="Open full size">
-                    <img src={`/api/runs/${e.runId}/images/${name}`} alt="Attached screenshot" />
-                  </a>
-                ))}
-              </span>
-            ) : null}
-          </span>
-        </div>
-      );
+      return <UserMessage event={e} />;
     case "text":
       return (
         <div className="row">
@@ -339,6 +324,29 @@ function EventRow({
     default:
       return null;
   }
+}
+
+function UserMessage({ event: e }: { event: Extract<AviatorEvent, { kind: "user" }> }) {
+  const [viewing, setViewing] = useState<number | null>(null);
+  const images = (e.images ?? []).map((name) => ({ url: `/api/runs/${e.runId}/images/${name}`, name }));
+  return (
+    <div className="user-msg">
+      <span className="caret">&gt;</span>
+      <span>
+        {e.text}
+        {images.length ? (
+          <span className="user-images">
+            {images.map((img, i) => (
+              <button key={img.name} onClick={() => setViewing(i)} title="View larger">
+                <img src={img.url} alt="Attached screenshot" />
+              </button>
+            ))}
+          </span>
+        ) : null}
+      </span>
+      {viewing !== null && <ImageViewer images={images} start={viewing} onClose={() => setViewing(null)} />}
+    </div>
+  );
 }
 
 function BranchCard({

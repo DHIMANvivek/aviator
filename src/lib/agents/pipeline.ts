@@ -1,22 +1,28 @@
+import { exec } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
+import { cleanHostEnv } from "../auth";
 import { fetchClickUpTask, parseClickUpRef } from "../clickup";
-import { branchProblem, diffRepo, DirtyRepoError, isDirty, prepareRepo, suggestBranch } from "../git";
+import { branchProblem, currentBranch, diffRepo, DirtyRepoError, isDirty, prepareRepo, suggestBranch } from "../git";
 import {
   emit as emitEvent,
   getPlanUsage,
+  history,
   registerLive,
   resetTime,
   setPlanUsage,
+  settleRun,
   takePending,
   unregisterLive,
   type ApprovalDecision,
   type LiveRun,
 } from "../runtime";
-import { dataDir, emptyAgents, getProject, newId, saveRun, saveRunImages, writeRunFile } from "../store";
+import { dataDir, emptyAgents, getProject, getRun, loadRunImages, newId, readRunFile, saveRun, saveRunImages, writeRunFile } from "../store";
 import type {
   Actor,
   AgentName,
   AgentState,
+  BaselineCheck,
   BuilderName,
   EventBody,
   PlanOutput,
@@ -27,6 +33,7 @@ import type {
   ReportOutput,
   ResearchOutput,
   Run,
+  RunRepo,
   RunStatus,
   Stage,
   TaskBrief,
@@ -50,10 +57,17 @@ export type StartRunInput = {
   notice?: string;
   /** Screenshots attached in the chat box; the researcher, planner and builders see them. */
   images?: ImageInput[];
+  /** Continuing: what you told the agents when you pressed Continue. */
+  note?: string;
 };
 
 const MAX_QA_ATTEMPTS = 3;
+const BASELINE_TIMEOUT_MS = 10 * 60_000;
 const MAX_RELAY_ROUNDS = 3;
+/**
+ * Diffs up to this size go into the reporter's prompt: it can then write the report in a single
+ * step, which is cheaper than reading the changed files over several steps.
+ */
 const MAX_REPORT_PATCH_CHARS = 200_000;
 /** Task messages longer than this are shortened in the run log (the agent still gets all of it). */
 const MAX_LOGGED_PROMPT = 60_000;
@@ -83,6 +97,8 @@ class RunContext implements AgentHost {
   }
   stage(stage: Stage, label: string) {
     this.run.stage = stage;
+    const furthest = this.run.furthestStage ?? stage;
+    if (STAGE_ORDER.indexOf(stage) >= STAGE_ORDER.indexOf(furthest)) this.run.furthestStage = stage;
     this.save();
     this.emit("orchestrator", { kind: "stage", stage, label });
   }
@@ -100,12 +116,15 @@ class RunContext implements AgentHost {
     this.save();
     this.emit("orchestrator", { kind: "agent", agent, state: { ...this.run.agents[agent] } });
   }
-  addUsage(agent: string, tokens: number, turns: number) {
-    this.agentState(agent).tokens += tokens;
-    this.agentState(agent).turns += turns;
+  addUsage(agent: string, tokens: number, turns: number, cached = 0) {
+    const state = this.agentState(agent);
+    state.tokens += tokens;
+    state.cachedTokens = (state.cachedTokens ?? 0) + cached;
+    state.turns += turns;
     this.run.tokens += tokens;
+    this.run.cachedTokens = (this.run.cachedTokens ?? 0) + cached;
     this.save();
-    this.emit("orchestrator", { kind: "usage", tokens: this.run.tokens });
+    this.emit("orchestrator", { kind: "usage", tokens: this.run.tokens, cached: this.run.cachedTokens });
     this.emit("orchestrator", { kind: "agent", agent, state: { ...this.run.agents[agent] } });
   }
   planUsage(usage: PlanUsage) {
@@ -294,6 +313,51 @@ export function startRun(input: StartRunInput): Run {
   return run;
 }
 
+/** Pipeline stages in order, to tell how far a stopped run got. */
+const STAGE_ORDER: Stage[] = ["intake", "prepare", "research", "clarify", "plan", "approval", "build", "qa", "report", "done"];
+
+/**
+ * Pick a stopped run back up (e.g. after your plan's usage limit resets) on the same branch:
+ * finished research and an approved plan are reused, builders resume their own sessions,
+ * and testing and the report run again.
+ */
+/** Marks a note you add when continuing, inside the task's clarifications. */
+export const CONTINUE_NOTE = "Note from the developer when continuing the run";
+
+export function continueRun(runId: string, note?: string): Run {
+  const found = getRun(runId);
+  if (!found) throw new Error("Run not found.");
+  // A run cut off by a restart is stopped too.
+  const run = settleRun(found);
+  if (!["failed", "cancelled"].includes(run.status)) throw new Error("Only a stopped run can be continued.");
+  if (!run.repos.length) throw new Error("This run stopped before it had a branch. Start the task again instead.");
+  const project = getProject(run.projectId);
+  if (!project) throw new Error("This run's project no longer exists.");
+  assertPlanUsage();
+
+  const reached = run.furthestStage ?? run.stage;
+  run.error = undefined;
+  run.errorCode = undefined;
+  run.errorRepo = undefined;
+  run.status = "running";
+  saveRun(run);
+  const trimmed = note?.trim();
+  // Your note (e.g. changes you made yourself meanwhile) becomes part of the task, so every
+  // agent that runs from here on sees it.
+  if (trimmed) run.brief.clarifications.push({ questions: [CONTINUE_NOTE], answer: trimmed });
+  saveRun(run);
+  emitEvent(run.id, "user", { kind: "user", text: trimmed ? `/continue\n${trimmed}` : "/continue" });
+  // Tells open pages the run is live again (they go by the latest status event).
+  emitEvent(run.id, "orchestrator", { kind: "status", status: "running" });
+  // The first message's screenshots, for agents that start fresh.
+  const first = history(run.id).find((e) => e.kind === "user");
+  const images = first?.kind === "user" && first.images?.length ? loadRunImages(run.id, first.images) : undefined;
+  const live = registerLive(run.id);
+  const input: StartRunInput = { projectId: project.id, source: run.input?.source ?? "prompt", text: run.input?.text ?? run.brief.description, images };
+  void execute(new RunContext(run, project, live), { ...input, note: trimmed }, reached).finally(() => unregisterLive(run.id));
+  return run;
+}
+
 function waitFor<T>(live: LiveRun, key: "answer" | "decide"): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const onAbort = () => reject(new Error("aborted"));
@@ -349,9 +413,38 @@ async function prepareWorkspace(ctx: RunContext, branch: string): Promise<Worksp
 
   if (project.layout === "monorepo") {
     if (!project.root) throw new Error("This monorepo project has no repo root set.");
-    const repo = await prepare("monorepo", project.root);
-    run.repos = [repo];
-    ctx.save();
+    run.repos = [await prepare("monorepo", project.root)];
+  } else {
+    const backend = project.backendPath ? await prepare("backend", project.backendPath) : undefined;
+    const frontend = project.frontendPath ? await prepare("frontend", project.frontendPath) : undefined;
+    if (!backend && !frontend) throw new Error("This project has no repo paths set.");
+    run.repos = [backend, frontend].filter((r) => !!r);
+  }
+  ctx.save();
+  return workspaceFrom(project, run.repos);
+}
+
+/** A continued run works on the branch it already has: check each repo is still on it. */
+async function reopenWorkspace(ctx: RunContext): Promise<Workspace> {
+  const { project, run } = ctx;
+  if (!run.repos.length) throw new Error("This run never got a branch, so there's nothing to continue. Start the task again.");
+  for (const repo of run.repos) {
+    if (run.demo) continue;
+    if (!fs.existsSync(repo.workPath)) throw new Error(`${repo.workPath} no longer exists, so this run can't continue.`);
+    const current = await currentBranch(repo.workPath);
+    if (current !== repo.branch) {
+      throw new Error(
+        `${repo.workPath} is on branch "${current}", not this run's branch "${repo.branch}". Switch back with \`git -C "${repo.workPath}" switch ${repo.branch}\`, then continue.`,
+      );
+    }
+  }
+  return workspaceFrom(project, run.repos);
+}
+
+function workspaceFrom(project: Project, repos: RunRepo[]): Workspace {
+  const branch = repos[0].branch;
+  if (project.layout === "monorepo") {
+    const repo = repos.find((r) => r.role === "monorepo") ?? repos[0];
     const owned = (dirs?: string[]) =>
       dirs && dirs.length ? dirs.map((d) => path.resolve(repo.workPath, d)) : [repo.workPath];
     return {
@@ -373,11 +466,8 @@ async function prepareWorkspace(ctx: RunContext, branch: string): Promise<Worksp
     };
   }
 
-  const backend = project.backendPath ? await prepare("backend", project.backendPath) : undefined;
-  const frontend = project.frontendPath ? await prepare("frontend", project.frontendPath) : undefined;
-  if (!backend && !frontend) throw new Error("This project has no repo paths set.");
-  run.repos = [backend, frontend].filter((r) => !!r);
-  ctx.save();
+  const backend = repos.find((r) => r.role === "backend");
+  const frontend = repos.find((r) => r.role === "frontend");
   const scopes: Workspace["scopes"] = {};
   if (backend) {
     scopes.backend = { cwd: backend.workPath, owned: [backend.workPath], additional: frontend ? [frontend.workPath] : [] };
@@ -401,6 +491,23 @@ async function prepareWorkspace(ctx: RunContext, branch: string): Promise<Worksp
       .filter(Boolean)
       .join("\n"),
   };
+}
+
+/** Research a run already did; runs from before it was saved get it back from research.md. */
+function savedResearch(run: Run): ResearchOutput | undefined {
+  if (run.research) return { ...run.research };
+  const summary = readRunFile(run.id, "research.md");
+  if (!summary) return undefined;
+  const areas = (["backend", "frontend"] as BuilderName[]).filter((b) =>
+    (b === "backend" ? run.plan?.backendTask : run.plan?.frontendTask)?.trim(),
+  );
+  return { clear: true, questions: [], taskType: "feature", areas, relevantFiles: [], summary };
+}
+
+/** Notes you added when continuing the run, for prompts that don't include the whole task. */
+function developerNotes(run: Run): string {
+  const notes = run.brief.clarifications.filter((c) => c.questions[0] === CONTINUE_NOTE).map((c) => `- ${c.answer}`);
+  return notes.length ? `## Notes from the developer (added when continuing)\n${notes.join("\n")}` : "";
 }
 
 function checksMarkdown(ws: Workspace): string {
@@ -427,6 +534,40 @@ function plannerPrompt(run: Run, research: ResearchOutput, ws: Workspace, feedba
   return parts.filter(Boolean).join("\n\n");
 }
 
+/**
+ * Run your configured check commands. Aviator runs them itself, so it costs no Claude usage:
+ * once on the untouched code (so agents know which failures were already there) and before
+ * each QA pass (so QA reviews results instead of running and reading whole test suites).
+ */
+async function runChecks(ws: Workspace, signal: AbortSignal): Promise<BaselineCheck[]> {
+  const results: BaselineCheck[] = [];
+  for (const check of ws.checks) {
+    for (const command of check.commands) {
+      if (signal.aborted) return results;
+      const passed = await new Promise<{ ok: boolean; output: string }>((resolve) =>
+        exec(
+          command,
+          // The same environment the agents' own commands get, so results match what they'd see.
+          { cwd: check.cwd, timeout: BASELINE_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024, signal, env: cleanHostEnv() },
+          (err, stdout, stderr) => resolve({ ok: !err, output: `${stdout}${stderr}`.trim() }),
+        ),
+      );
+      results.push({ label: check.label, command, passed: passed.ok, output: passed.output.slice(-3000) });
+    }
+  }
+  return results;
+}
+
+function baselineMarkdown(run: Run): string {
+  const failing = (run.baseline ?? []).filter((c) => !c.passed);
+  if (!failing.length) return "";
+  return [
+    "## Checks that already fail before any change",
+    "Aviator ran these on the base commit and they failed there too. Those existing failures aren't yours to fix unless your task asks for it, but any failure in them that isn't in the output below is new, and counts.",
+    ...failing.map((c) => `- \`${c.command}\` (${c.label}). Output on the base commit (end):\n\`\`\`\n${c.output.slice(-1500)}\n\`\`\``),
+  ].join("\n");
+}
+
 function builderPrompt(agent: BuilderName, run: Run, plan: PlanOutput, ws: Workspace): string {
   const task = agent === "backend" ? plan.backendTask : plan.frontendTask;
   return [
@@ -434,7 +575,8 @@ function builderPrompt(agent: BuilderName, run: Run, plan: PlanOutput, ws: Works
     `## Contract shared with the other builder\n${plan.contractMd}`,
     `## Overall plan, for context\n${plan.planMd}`,
     plan.acceptanceCriteria.length ? `## Acceptance criteria\n${plan.acceptanceCriteria.map((c) => `- ${c}`).join("\n")}` : "",
-    `## Checks\n${checksMarkdown(ws)}`,
+    `## Checks\n${checksMarkdown(ws)}\n\nWhile you work, run the ones for your own area (${agent}). Aviator runs all of them itself before QA, so you don't need to run the other builder's.`,
+    baselineMarkdown(run),
     `## Original task\n${briefMarkdown(run.brief)}`,
   ]
     .filter(Boolean)
@@ -445,15 +587,31 @@ function changesHint(run: Run): string {
   return run.repos.map((r) => `- \`git -C ${r.workPath} diff ${r.baseCommit}\` and \`git -C ${r.workPath} status\``).join("\n");
 }
 
-function qaPrompt(run: Run, plan: PlanOutput, ws: Workspace, attempt: number, reviewNotes = ""): string {
+/** Check results Aviator got just now, for QA; failures keep the end of their output. */
+function checkResultsMarkdown(run: Run, results: BaselineCheck[]): string {
+  const before = new Map((run.baseline ?? []).map((c) => [c.command, c.passed]));
+  return [
+    "## Check results (Aviator ran these just now; don't run them again)",
+    "Re-run a failing one only if you need more of its output to assign or explain the failure.",
+    ...results.map((c) =>
+      c.passed
+        ? `- ✓ \`${c.command}\` (${c.label})`
+        : `- ✗ \`${c.command}\` (${c.label})${before.get(c.command) === false ? ", also failed before any change: compare with its base-commit output, only new failures count" : ""}\n\`\`\`\n${c.output}\n\`\`\``,
+    ),
+  ].join("\n");
+}
+
+function qaPrompt(run: Run, plan: PlanOutput, ws: Workspace, attempt: number, reviewNotes = "", results?: BaselineCheck[]): string {
   return [
     `# QA pass ${attempt} for: ${run.brief.title}`,
     `## Acceptance criteria\n${plan.acceptanceCriteria.map((c) => `- ${c}`).join("\n") || "- (none listed; use the plan)"}`,
-    `## Checks to run\n${checksMarkdown(ws)}`,
+    results?.length ? checkResultsMarkdown(run, results) : `## Checks to run\n${checksMarkdown(ws)}`,
     `## See the changes\n${changesHint(run)}`,
     `## Plan\n${plan.planMd}`,
     `## Contract\n${plan.contractMd}`,
     reviewNotes ? `## Reviews by custom agents\n${reviewNotes}` : "",
+    developerNotes(run),
+    baselineMarkdown(run),
     `Builders: ${Object.keys(ws.scopes).join(", ")}. Assign every failure to one of them.`,
   ]
     .filter(Boolean)
@@ -561,63 +719,94 @@ async function drainRelays(
   }
 }
 
-async function execute(ctx: RunContext, input: StartRunInput) {
+/** `resumeFrom` is the stage a continued run had reached when it stopped. */
+async function execute(ctx: RunContext, input: StartRunInput, resumeFrom?: Stage) {
   const { run, project, live } = ctx;
+  const reached = resumeFrom ? STAGE_ORDER.indexOf(resumeFrom) : -1;
+  /** True when a continued run already got past this stage. */
+  const past = (stage: Stage) => reached > STAGE_ORDER.indexOf(stage);
+  /** True when a continued run stopped while waiting at this stage. */
+  const stoppedAt = (stage: Stage) => reached === STAGE_ORDER.indexOf(stage);
   try {
+    if (resumeFrom) {
+      ctx.stage("prepare", "Continuing on the same branch");
+      ctx.ws = await reopenWorkspace(ctx);
+      ctx.say(`Continuing on ${run.repos.map((r) => `\`${r.branch}\` in \`${r.workPath}\``).join(" and ")}. Work that already finished is reused.`);
+    }
     // 1. Intake: ClickUp task or prompt -> task brief
-    ctx.stage("intake", "Reading the task");
-    if (input.notice) ctx.say(input.notice);
-    if (run.demo) {
+    if (!resumeFrom) {
+      ctx.stage("intake", "Reading the task");
+      if (input.notice) ctx.say(input.notice);
+      if (run.demo) {
+        ctx.say(
+          "**Demo mode:** what follows is a scripted example (an S3 photo upload). It ignores your task, doesn't call Claude and doesn't touch your repos. Start Aviator with `npm run dev` (port 3210) for real runs.",
+        );
+      }
+      if (input.source === "clickup") {
+        const ref = parseClickUpRef(input.text);
+        if (!ref) throw new Error(`"${input.text}" doesn't look like a ClickUp task link or ID.`);
+        ctx.say(`Fetching ClickUp task \`${ref.id}\`…`);
+        run.brief = run.demo ? demoBrief(ref.id) : await fetchClickUpTask(ref);
+      }
+      run.title = run.brief.title;
+      ctx.save();
       ctx.say(
-        "**Demo mode:** what follows is a scripted example (an S3 photo upload). It ignores your task, doesn't call Claude and doesn't touch your repos. Start Aviator with `npm run dev` (port 3210) for real runs.",
+        [
+          `**${run.brief.title}**${run.brief.url ? ` · [open in ClickUp](${run.brief.url})` : ""}`,
+          run.brief.acceptanceCriteria.length ? `${run.brief.acceptanceCriteria.length} acceptance criteria` : "",
+          run.brief.attachments.length ? `${run.brief.attachments.length} attachment(s)` : "",
+          run.brief.comments.length ? `${run.brief.comments.length} comment(s)` : "",
+        ]
+          .filter(Boolean)
+          .join(" · "),
+      );
+
+      // 2. Branch (or worktree) per repo so the agents' work stays isolated; you name it
+      ctx.stage("prepare", "Naming the branch");
+      const branch = await chooseBranch(ctx);
+      ctx.stage("prepare", "Creating a branch");
+      ctx.ws = await prepareWorkspace(ctx, branch);
+      ctx.say(
+        run.repos
+          .map((r) => `- Branch \`${r.branch}\` ${r.workPath === r.originalPath ? "in" : "as a worktree of"} \`${r.originalPath}\``)
+          .join("\n"),
       );
     }
-    if (input.source === "clickup") {
-      const ref = parseClickUpRef(input.text);
-      if (!ref) throw new Error(`"${input.text}" doesn't look like a ClickUp task link or ID.`);
-      ctx.say(`Fetching ClickUp task \`${ref.id}\`…`);
-      run.brief = run.demo ? demoBrief(ref.id) : await fetchClickUpTask(ref);
+    const ws = ctx.ws!;
+    // Your checks on the untouched code, run alongside research and planning. A continued run
+    // keeps the results from before (the code isn't untouched any more).
+    const runsBaseline = !run.demo && !resumeFrom && ws.checks.length > 0;
+    let baselineDone = !runsBaseline;
+    const baseline: Promise<BaselineCheck[] | undefined> = runsBaseline
+      ? runChecks(ws, live.abort.signal)
+          .catch(() => undefined)
+          .finally(() => (baselineDone = true))
+      : Promise.resolve(run.baseline);
+
+    // 3. Research (read-only); a continued run that finished it reuses the findings (and asks
+    // its questions again if it stopped while waiting for your answers)
+    const saved = past("clarify") || (stoppedAt("clarify") && run.research) ? savedResearch(run) : undefined;
+    let research: ResearchOutput;
+    if (saved) {
+      research = saved;
+    } else {
+      ctx.stage("research", "Researching the codebase");
+      ({ value: research } = await ctx.structured<ResearchOutput>({
+        agent: "researcher",
+        prompt: researchPrompt(run, ws),
+        images: input.images,
+        cwd: ws.primary,
+        additionalDirectories: ws.others,
+        schema: SCHEMAS.researcher,
+      }));
+      run.research = { ...research };
+      ctx.save();
+      writeRunFile(run.id, "research.md", research.summary);
+      ctx.emit("researcher", { kind: "text", text: `## Research findings\n\n${research.summary}` });
     }
-    run.title = run.brief.title;
-    ctx.save();
-    ctx.say(
-      [
-        `**${run.brief.title}**${run.brief.url ? ` · [open in ClickUp](${run.brief.url})` : ""}`,
-        run.brief.acceptanceCriteria.length ? `${run.brief.acceptanceCriteria.length} acceptance criteria` : "",
-        run.brief.attachments.length ? `${run.brief.attachments.length} attachment(s)` : "",
-        run.brief.comments.length ? `${run.brief.comments.length} comment(s)` : "",
-      ]
-        .filter(Boolean)
-        .join(" · "),
-    );
-
-    // 2. Branch (or worktree) per repo so the agents' work stays isolated; you name it
-    ctx.stage("prepare", "Naming the branch");
-    const branch = await chooseBranch(ctx);
-    ctx.stage("prepare", "Creating a branch");
-    const ws = await prepareWorkspace(ctx, branch);
-    ctx.ws = ws;
-    ctx.say(
-      run.repos
-        .map((r) => `- Branch \`${r.branch}\` ${r.workPath === r.originalPath ? "in" : "as a worktree of"} \`${r.originalPath}\``)
-        .join("\n"),
-    );
-
-    // 3. Research (read-only)
-    ctx.stage("research", "Researching the codebase");
-    const { value: research } = await ctx.structured<ResearchOutput>({
-      agent: "researcher",
-      prompt: researchPrompt(run, ws),
-      images: input.images,
-      cwd: ws.primary,
-      additionalDirectories: ws.others,
-      schema: SCHEMAS.researcher,
-    });
-    writeRunFile(run.id, "research.md", research.summary);
-    ctx.emit("researcher", { kind: "text", text: `## Research findings\n\n${research.summary}` });
 
     // 4. Ask the developer when the task is genuinely ambiguous
-    if (!research.clear && research.questions.length) {
+    if ((!saved || stoppedAt("clarify")) && !research.clear && research.questions.length) {
       ctx.stage("clarify", "Waiting for your answers");
       run.pendingQuestions = research.questions;
       ctx.emit("researcher", { kind: "question", questions: research.questions });
@@ -629,24 +818,34 @@ async function execute(ctx: RunContext, input: StartRunInput) {
     }
 
     // Your custom agents placed after research: their notes go to the planner.
-    const afterResearch = await runStepAgents(
+    const afterResearch = saved ? { notes: "" } : await runStepAgents(
       ctx,
       "after-research",
       [briefMarkdown(run.brief), `## Research findings\n${research.summary}`, `## Workspace\n${ws.description}`].join("\n\n"),
     );
     if (afterResearch.notes) research.summary += `\n\n${afterResearch.notes}`;
 
-    // 5. Plan + contract, optionally approved by the developer
-    ctx.stage("plan", "Planning");
+    // 5. Plan + contract, optionally approved by the developer. A continued run keeps its plan
+    // when it got past approval, or shows it again if it stopped while waiting for approval.
+    const approved = past("approval") && !!run.plan;
+    const keepPlan = approved || (stoppedAt("approval") && !!run.plan);
+    ctx.stage("plan", keepPlan ? "Using the plan from before" : "Planning");
+    // Revisions continue the planner's session, so it doesn't explore the code all over again.
+    let plannerSession: string | undefined = keepPlan ? run.agents.planner?.sessionId : undefined;
     const planOnce = async (feedback?: string, previous?: PlanOutput) => {
-      const { value } = await ctx.structured<PlanOutput>({
+      const revise = !!(feedback && plannerSession);
+      const { value, sessionId } = await ctx.structured<PlanOutput>({
         agent: "planner",
-        prompt: plannerPrompt(run, research, ws, feedback, previous),
-        images: input.images,
+        prompt: revise
+          ? `## Developer feedback: revise the plan accordingly\n${feedback}\n\nReturn the complete revised plan. You have already explored the code; read more only where the feedback needs it.`
+          : plannerPrompt(run, research, ws, feedback, previous),
+        images: revise ? undefined : input.images,
         cwd: ws.primary,
         additionalDirectories: ws.others,
         schema: SCHEMAS.planner,
+        resume: revise ? plannerSession : undefined,
       });
+      plannerSession = sessionId ?? plannerSession;
       // Your custom agents placed after planning review it; their notes become part of the plan.
       const review = await runStepAgents(
         ctx,
@@ -660,8 +859,8 @@ async function execute(ctx: RunContext, input: StartRunInput) {
       writeRunFile(run.id, "contract.md", value.contractMd);
       return value;
     };
-    let plan = await planOnce();
-    if (project.requirePlanApproval) {
+    let plan = keepPlan ? run.plan! : await planOnce();
+    if (!approved && project.requirePlanApproval) {
       for (;;) {
         ctx.stage("approval", "Waiting for plan approval");
         ctx.emit("planner", { kind: "approval", planMd: plan.planMd, contractMd: plan.contractMd });
@@ -675,12 +874,23 @@ async function execute(ctx: RunContext, input: StartRunInput) {
         ctx.stage("plan", "Revising the plan");
         plan = await planOnce(decision.feedback, plan);
       }
-    } else {
+    } else if (!keepPlan) {
       ctx.emit("planner", { kind: "text", text: `## Plan\n\n${plan.planMd}\n\n## Contract\n\n${plan.contractMd}` });
     }
 
-    // 6. Build: backend and frontend in parallel, relaying messages between them
-    ctx.stage("build", "Building");
+    // 6. Build: backend and frontend in parallel, relaying messages between them. A continued
+    // run skips builders that finished and resumes the others' sessions where they stopped.
+    const buildDone = past("build");
+    if (!baselineDone) ctx.say("Waiting for your checks to finish on the untouched code before building…");
+    run.baseline = await baseline;
+    ctx.save();
+    const alreadyFailing = (run.baseline ?? []).filter((c) => !c.passed);
+    if (!resumeFrom && alreadyFailing.length) {
+      ctx.say(
+        `These checks already fail before any change, so the agents won't treat them as their job:\n${alreadyFailing.map((c) => `- \`${c.command}\``).join("\n")}`,
+      );
+    }
+    ctx.stage("build", buildDone ? "Building (already done)" : "Building");
     const builders = (["backend", "frontend"] as BuilderName[]).filter((b) => {
       const task = b === "backend" ? plan.backendTask : plan.frontendTask;
       return task.trim() && ws.scopes[b];
@@ -700,12 +910,31 @@ async function execute(ctx: RunContext, input: StartRunInput) {
         peer: builders.length === 2 ? (b === "backend" ? "frontend" : "backend") : null,
       };
     };
-    const sessions: Partial<Record<BuilderName, string>> = {};
+    const sessions: Partial<Record<BuilderName, string>> = resumeFrom
+      ? Object.fromEntries(builders.map((b) => [b, run.agents[b]?.sessionId]).filter(([, id]) => id))
+      : {};
     if (!builders.length) ctx.say("The plan needs no code changes.");
+    const toBuild = buildDone ? [] : builders.filter((b) => !(resumeFrom && run.agents[b]?.status === "done"));
     await Promise.all(
-      builders.map(async (b) => {
-        const result = await ctx.agent(makeRequest(b));
-        sessions[b] = result.sessionId;
+      toBuild.map(async (b) => {
+        const result = await ctx.agent(
+          sessions[b]
+            ? {
+                ...makeRequest(b),
+                images: undefined,
+                resume: sessions[b],
+                prompt: [
+                  "You were stopped partway through (for example by the usage limit). Continue your task from where you left off: check `git status` and `git diff` to see what you already changed, finish the rest, run the checks, then summarize.",
+                  input.note
+                    ? `## Note from the developer\n${input.note}\n\nThey may have changed files themselves while you were stopped; treat the current files as the starting point and don't undo their changes.`
+                    : "",
+                ]
+                  .filter(Boolean)
+                  .join("\n\n"),
+              }
+            : makeRequest(b),
+        );
+        sessions[b] = result.sessionId ?? sessions[b];
         if (result.isError) ctx.emit(b, { kind: "error", message: result.errors.filter(Boolean).join("\n") });
       }),
     );
@@ -714,7 +943,7 @@ async function execute(ctx: RunContext, input: StartRunInput) {
     // Your custom agents placed after building review the changes before QA. Blocking findings
     // go back to the builder that owns them (one round), like QA failures.
     let reviewNotes = "";
-    if (builders.length) {
+    if (toBuild.length) {
       const review = await runStepAgents(
         ctx,
         "after-build",
@@ -752,16 +981,39 @@ async function execute(ctx: RunContext, input: StartRunInput) {
 
     // 7. QA + review; failures go back to the builder that owns them
     let qa: QaOutput | undefined;
-    if (builders.length) {
+    if (builders.length && !past("qa")) {
+      // Re-tests continue QA's session: it already knows the plan and the diff, so it only
+      // reviews what the builders changed since its last pass.
+      let qaSession: string | undefined;
       for (let attempt = 1; attempt <= MAX_QA_ATTEMPTS; attempt++) {
         ctx.stage("qa", attempt === 1 ? "Testing and reviewing" : `Re-testing (attempt ${attempt} of ${MAX_QA_ATTEMPTS})`);
-        ({ value: qa } = await ctx.structured<QaOutput>({
+        if (ws.checks.length && !run.demo) ctx.say("Running your checks…");
+        const results = ws.checks.length && !run.demo ? await runChecks(ws, live.abort.signal) : undefined;
+        if (results) {
+          const failing = results.filter((c) => !c.passed);
+          ctx.say(
+            failing.length
+              ? `${results.length - failing.length} of ${results.length} checks pass. Failing:\n${failing.map((c) => `- \`${c.command}\``).join("\n")}`
+              : `All ${results.length} checks pass.`,
+          );
+        }
+        const recheck = !!qaSession;
+        const out = await ctx.structured<QaOutput>({
           agent: "qa",
-          prompt: qaPrompt(run, plan, ws, attempt, reviewNotes),
+          prompt: recheck
+            ? [
+                `# QA pass ${attempt}: the builders fixed what you reported`,
+                results?.length ? checkResultsMarkdown(run, results) : `## Checks to run\n${checksMarkdown(ws)}`,
+                `Review what changed since your last pass (\`git diff\` and \`git status\`), then return the complete result for the whole change, not only the fixes.`,
+              ].join("\n\n")
+            : qaPrompt(run, plan, ws, attempt, reviewNotes, results),
           cwd: ws.primary,
           additionalDirectories: ws.others,
           schema: SCHEMAS.qa,
-        }));
+          resume: recheck ? qaSession : undefined,
+        });
+        qa = out.value;
+        qaSession = out.sessionId ?? qaSession;
         if (qa.passed || attempt === MAX_QA_ATTEMPTS) break;
         const owners = builders.filter((b) => qa!.failures.some((f) => f.owner === b));
         if (!owners.length) break;
@@ -783,7 +1035,7 @@ async function execute(ctx: RunContext, input: StartRunInput) {
         await drainRelays(ctx, sessions, makeRequest);
       }
     }
-    run.qaPassed = builders.length === 0 || qa?.passed === true;
+    run.qaPassed = builders.length === 0 || (past("qa") ? run.qaPassed === true : qa?.passed === true);
     ctx.save();
 
     // 8. Report: before/after, how it works, files, test steps

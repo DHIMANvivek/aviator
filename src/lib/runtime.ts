@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { EventEmitter } from "node:events";
-import { logDir } from "./store";
-import type { Actor, AviatorEvent, EventBody, ImageInput, PlanUsage } from "./types";
+import { logDir, saveChat, saveRun } from "./store";
+import { ACTIVE_STATUSES, CHAT_AGENT, type Actor, type AviatorEvent, type Chat, type EventBody, type ImageInput, type PlanUsage, type Run } from "./types";
 
 export type PendingMessage = { text: string; images?: ImageInput[] };
 
@@ -78,6 +78,18 @@ export function emit(runId: string, actor: Actor, body: EventBody): AviatorEvent
   return event;
 }
 
+/**
+ * Stop a run or chat and wait until it has finished winding down (it writes its final state
+ * on the way out), so deleting it afterwards really removes everything.
+ */
+export async function stopAndWait(runId: string, timeoutMs = 15_000) {
+  const live = rt.live.get(runId);
+  if (!live) return;
+  live.abort.abort();
+  const until = Date.now() + timeoutMs;
+  while (rt.live.has(runId) && Date.now() < until) await new Promise((r) => setTimeout(r, 100));
+}
+
 /** Drop a deleted run's or chat's cached event log. */
 export function forget(runId: string) {
   rt.history.delete(runId);
@@ -119,4 +131,31 @@ export function takePending(runId: string, agent: string): PendingMessage[] {
   const queue = live?.pending.get(agent) ?? [];
   live?.pending.delete(agent);
   return queue;
+}
+
+/**
+ * A run or chat that is active on disk but has nothing running was cut off by a server
+ * restart. Mark it stopped and tell open pages (they go by the latest events), so the run
+ * shows Continue and the chat stops showing "Working".
+ */
+export function settleRun(run: Run): Run {
+  if (rt.live.has(run.id) || !ACTIVE_STATUSES.includes(run.status)) return run;
+  run.status = "failed";
+  run.error = "Aviator restarted while this run was in progress.";
+  for (const [agent, state] of Object.entries(run.agents)) {
+    if (state.status !== "running") continue;
+    state.status = "error";
+    emit(run.id, "orchestrator", { kind: "agent", agent, state: { ...state } });
+  }
+  saveRun(run);
+  emit(run.id, "orchestrator", { kind: "status", status: "failed", message: `${run.error} Press Continue to pick it up where it stopped.` });
+  return run;
+}
+
+export function settleChat(chat: Chat): Chat {
+  if (rt.live.has(chat.id) || chat.agent.status !== "running") return chat;
+  chat.agent.status = "idle";
+  saveChat(chat);
+  emit(chat.id, "orchestrator", { kind: "agent", agent: CHAT_AGENT, state: { ...chat.agent } });
+  return chat;
 }

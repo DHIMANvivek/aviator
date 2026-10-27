@@ -1,13 +1,13 @@
 import { looksLikeClickUp } from "@/lib/clickup";
 import { startRun } from "@/lib/agents/pipeline";
-import { getLive } from "@/lib/runtime";
-import { checkImages, listRuns, markOrphaned } from "@/lib/store";
+import { settleRun } from "@/lib/runtime";
+import { checkImages, listRuns } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export function GET() {
-  const runs = listRuns().map((r) => markOrphaned(r, !!getLive(r.id)));
+  const runs = listRuns().map(settleRun);
   return Response.json(
     runs.map(({ id, projectId, title, status, stage, createdAt, updatedAt, tokens, demo }) => ({
       id,

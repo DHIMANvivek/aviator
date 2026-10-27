@@ -76,6 +76,8 @@ export type AgentState = {
   status: "idle" | "running" | "done" | "error" | "skipped";
   sessionId?: string;
   tokens: number;
+  /** Of `tokens`, context re-read from the prompt cache on each step (counts far less toward plan limits). */
+  cachedTokens?: number;
   turns: number;
   startedAt?: number;
   endedAt?: number;
@@ -117,6 +119,9 @@ export type ReportOutput = {
   risks: string[];
 };
 
+/** One configured check command run by Aviator itself (no Claude usage). */
+export type BaselineCheck = { label: string; command: string; passed: boolean; output: string };
+
 export type DiffFile = {
   path: string;
   status: "added" | "modified" | "deleted" | "renamed";
@@ -134,14 +139,21 @@ export type Run = {
   brief: TaskBrief;
   status: RunStatus;
   stage: Stage;
+  /** The furthest stage reached, across continues; where a continued run picks up. */
+  furthestStage?: Stage;
   createdAt: number;
   updatedAt: number;
   repos: RunRepo[];
   tokens: number;
+  cachedTokens?: number;
   planUsage?: PlanUsage;
   /** Built-in agents always; custom agents once they run. */
   agents: Record<string, AgentState>;
   pendingQuestions?: string[];
+  /** Kept so a continued run can skip research. */
+  research?: ResearchOutput;
+  /** Your checks as they ran on the untouched code, before any agent changed it. */
+  baseline?: BaselineCheck[];
   plan?: PlanOutput;
   report?: ReportOutput;
   diff?: RepoDiff[];
@@ -179,7 +191,7 @@ export type EventBody =
   | { kind: "approval"; planMd: string; contractMd: string }
   | { kind: "status"; status: RunStatus; message?: string }
   | { kind: "agent"; agent: string; state: AgentState }
-  | { kind: "usage"; tokens: number }
+  | { kind: "usage"; tokens: number; cached?: number }
   | { kind: "plan_usage"; usage: PlanUsage }
   | { kind: "user"; text: string; images?: string[] }
   | { kind: "denied"; tool: string; reason: string }
@@ -235,6 +247,7 @@ export type Chat = {
   /** The Claude Code session each new message resumes. */
   sessionId?: string;
   tokens: number;
+  cachedTokens?: number;
   agent: AgentState;
 };
 

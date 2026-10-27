@@ -149,7 +149,7 @@ export function CustomAgentEditor({ agent, isNew, models, connections, history, 
           </select>
         </div>
         <div className="field">
-          <label>Max turns</label>
+          <label title="How many steps the agent may take in one go. A step is one Claude reply plus the tools it calls (reading a file, running a command…). When it reaches the limit it stops where it is, so raise it if an agent keeps stopping before it finishes." style={{ cursor: "help" }}>Max turns ⓘ</label>
           <input type="number" min={1} max={500} value={a.config.maxTurns} onChange={(e) => setConfig({ maxTurns: Number(e.target.value) || 40 })} />
         </div>
         <div className="field">

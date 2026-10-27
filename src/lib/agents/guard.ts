@@ -13,7 +13,9 @@ const SECRET_FILE = /(^|[\\/])(\.env(?!\.(example|sample|template|dist)\b)[^\\/]
 
 const BLOCKED_COMMANDS: { pattern: RegExp; reason: string }[] = [
   {
-    pattern: /\bgit\s+(-C\s+\S+\s+)?(push|commit|reset|rebase|merge|cherry-pick|revert|checkout|switch|stash|clean|remote|tag|worktree|config|filter-branch|update-ref|am|pull|fetch)\b/,
+    // Global options may come before the subcommand: git --no-pager push, git -c k=v commit, git -C dir …
+    pattern:
+      /\bgit\b(?:\s+(?:-C|-c|--git-dir|--work-tree|--namespace|--exec-path)(?:\s+|=)\S+|\s+--?[\w-]+(?:=\S+)?)*\s+(push|commit|reset|rebase|merge|cherry-pick|revert|checkout|switch|stash|clean|remote|tag|worktree|config|filter-branch|update-ref|am|pull|fetch)\b/,
     reason: "Aviator manages git itself. Agents never commit, push or change branches.",
   },
   { pattern: /\bgit\s+branch\s+-[dDmMf]/, reason: "Aviator manages branches itself." },

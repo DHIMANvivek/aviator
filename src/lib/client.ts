@@ -66,6 +66,7 @@ export type Derived = {
   stage?: Stage;
   stageLabel?: string;
   tokens: number;
+  cachedTokens?: number;
   planUsage?: PlanUsage;
   agents: Record<string, AgentState>;
   lastQuestionSeq: number;
@@ -83,11 +84,17 @@ export function derive(events: AviatorEvent[]): Derived {
         if (FINAL.includes(e.status)) d.finalMessage = e.message;
         break;
       case "stage":
+        // A new stage after the run stopped means it was continued.
+        if (d.status && FINAL.includes(d.status)) {
+          d.status = "running";
+          d.finalMessage = undefined;
+        }
         d.stage = e.stage;
         d.stageLabel = e.label;
         break;
       case "usage":
         d.tokens = e.tokens;
+        d.cachedTokens = e.cached;
         break;
       case "plan_usage":
         d.planUsage = e.usage;
@@ -121,6 +128,11 @@ const WINDOW_NAME: Record<string, string> = {
   seven_day_opus: "weekly Opus limit",
   seven_day_sonnet: "weekly Sonnet limit",
 };
+
+/** "92% cache re-reads": how much of a token count was context re-read from the prompt cache. */
+export function cacheShare(total: number, cached?: number): string {
+  return cached && total ? `${Math.round((cached / total) * 100)}% cache re-reads` : "";
+}
 
 /** One line about the plan's included usage, e.g. "34% of 5-hour limit used · resets 6:00 PM". */
 export function planUsageLine(u?: PlanUsage): { text: string; cls: "ok" | "warn" | "bad" } | null {

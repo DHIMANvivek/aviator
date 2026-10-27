@@ -1494,3 +1494,124 @@ pre.block {
   font: inherit;
   color: var(--text);
 }
+
+/* ---------- screenshot viewer ---------- */
+
+.viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  background: rgba(0, 0, 0, 0.85);
+}
+.viewer-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--line-strong);
+  flex-wrap: wrap;
+}
+.viewer-bar a.btn {
+  text-decoration: none;
+}
+.viewer-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.viewer-zoom {
+  min-width: 46px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.viewer-stage {
+  flex: 1;
+  overflow: auto;
+  cursor: zoom-in;
+  touch-action: none;
+  user-select: none;
+}
+.viewer-stage.pannable {
+  cursor: grab;
+}
+.viewer-stage.pannable:active {
+  cursor: grabbing;
+}
+.viewer-canvas {
+  min-width: 100%;
+  min-height: 100%;
+  width: max-content;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  box-sizing: border-box;
+}
+.viewer-canvas img {
+  max-width: none;
+  display: block;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+}
+.attachment .attachment-open {
+  all: unset;
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: zoom-in;
+}
+.user-images button {
+  all: unset;
+  cursor: zoom-in;
+}
+
+/* Delete button on a sidebar run or chat, shown on hover. */
+.run-row {
+  position: relative;
+}
+.run-delete {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: var(--bg-hover);
+  color: var(--dim);
+  font-size: 14px;
+  line-height: 22px;
+  opacity: 0;
+  cursor: pointer;
+}
+.run-row:hover .run-delete,
+.run-delete:focus-visible {
+  opacity: 1;
+}
+.run-delete:hover {
+  color: var(--red, #e5534b);
+}
+@media (hover: none) {
+  .run-delete {
+    opacity: 1;
+  }
+}
+.continue-note {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font: inherit;
+  color: var(--text);
+  resize: vertical;
+}

@@ -1,6 +1,6 @@
 "use client";
 
-import { actorColor, AGENT_GLYPH, duration, planUsageLine, stageIndex, STAGES, tokens, type Derived } from "@/lib/client";
+import { actorColor, AGENT_GLYPH, cacheShare, duration, planUsageLine, stageIndex, STAGES, tokens, type Derived } from "@/lib/client";
 import { AGENTS, type AgentName, type Project, type Run } from "@/lib/types";
 import { fileAnchor } from "./Report";
 import type { Filter } from "./Transcript";
@@ -165,6 +165,19 @@ export function SidePanel({
           })()}
           <div>
             <span className="k">this run</span> {tokens(derived.tokens || run?.tokens || 0)} tokens
+            {(() => {
+              const share = cacheShare(derived.tokens || run?.tokens || 0, derived.cachedTokens ?? run?.cachedTokens);
+              return share ? (
+                <span
+                  className="faint"
+                  title="Every step re-sends the agent's whole conversation so far. Most of it is re-read from Claude's prompt cache, which counts far less toward your plan's limits than new tokens."
+                  style={{ cursor: "help" }}
+                >
+                  {" "}
+                  · {share}
+                </span>
+              ) : null;
+            })()}
           </div>
           <div className="faint">
             Only your plan&apos;s included usage is used. If Claude switches to paid extra usage, Aviator stops the run.

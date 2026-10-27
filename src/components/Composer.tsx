@@ -2,6 +2,7 @@
 
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { ImageInput } from "@/lib/types";
+import { ImageViewer } from "./ImageViewer";
 
 type Attachment = ImageInput & { url: string };
 
@@ -47,6 +48,8 @@ export const COMMANDS = [
   { cmd: "/new", args: "", desc: "Start a new task" },
   { cmd: "/approve", args: "", desc: "Approve the plan waiting for review" },
   { cmd: "/cancel", args: "", desc: "Cancel the current run" },
+  { cmd: "/continue", args: "", desc: "Continue a stopped run on its branch" },
+  { cmd: "/delete", args: "", desc: "Delete the open run (its branch and changes stay)" },
   { cmd: "/agents", args: "", desc: "Model, effort, prompts and your custom agents" },
   { cmd: "/connections", args: "", desc: "Connect MCP tools for your agents" },
   { cmd: "/chat", args: "", desc: "General chat with full access to the project (no guardrails)" },
@@ -93,6 +96,8 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
   const fileInput = useRef<HTMLInputElement>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [attachError, setAttachError] = useState("");
+  /** Index of the attachment open in the zoom viewer. */
+  const [viewing, setViewing] = useState<number | null>(null);
   const [dragging, setDragging] = useState(false);
 
   useImperativeHandle(ref, () => ({
@@ -246,7 +251,9 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
           <div className="attachments">
             {attachments.map((a, i) => (
               <div className="attachment" key={i} title={a.name}>
-                <img src={a.url} alt={a.name ?? `Screenshot ${i + 1}`} />
+                <button className="attachment-open" onClick={() => setViewing(i)} aria-label={`View ${a.name ?? "screenshot"} larger`}>
+                  <img src={a.url} alt={a.name ?? `Screenshot ${i + 1}`} />
+                </button>
                 <button aria-label={`Remove ${a.name ?? "screenshot"}`} onClick={() => setAttachments(attachments.filter((_, j) => j !== i))}>
                   ×
                 </button>
@@ -311,6 +318,9 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
           }}
         />
       </div>
+      {viewing !== null && attachments[viewing] && (
+        <ImageViewer images={attachments} start={viewing} onClose={() => setViewing(null)} />
+      )}
       {attachError && <div className="bad" style={{ fontSize: 12, padding: "4px 4px 0" }}>{attachError}</div>}
       <div className="hints">
         <span>/ for commands · ⇧⏎ new line · paste or drop screenshots{cancellable ? " · esc esc to cancel" : ""}</span>

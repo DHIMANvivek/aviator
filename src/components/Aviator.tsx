@@ -59,6 +59,12 @@ export function Aviator() {
   const [chatId, setChatId] = useState<string | null>(null);
   const [agentSettings, setAgentSettings] = useState<AgentSettings | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  /** Continue the stopped run by itself once the plan limit resets (while this page is open). */
+  const [autoContinue, setAutoContinue] = useState<string | null>(null);
+  /** What to tell the agents when continuing, e.g. changes you made yourself meanwhile. */
+  const [continueNote, setContinueNote] = useState("");
+  /** The run a Continue was just sent for, so its card hides right away. */
+  const [continuing, setContinuing] = useState<string | null>(null);
   const composer = useRef<ComposerHandle>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
@@ -77,6 +83,13 @@ export function Aviator() {
     run && runStatus === "failed" && (run.errorCode === "dirty_repo" || /has uncommitted changes/.test(run.error ?? ""))
       ? (run.errorRepo ?? (run.error ?? "").split(" has uncommitted")[0])
       : null;
+
+  // A stopped run that has a branch can pick up where it stopped.
+  const canContinue =
+    !!run && !!runStatus && (runStatus === "failed" || runStatus === "cancelled") && run.repos.length > 0 && !dirtyRepo && continuing !== runId;
+  const usage = derived.planUsage ?? status?.planUsage;
+  const resetMs = usage?.resetsAt ? (usage.resetsAt < 1e12 ? usage.resetsAt * 1000 : usage.resetsAt) : undefined;
+  const limitUntil = usage && (usage.status === "rejected" || usage.usingExtraUsage) && resetMs && resetMs > now ? resetMs : undefined;
 
   // ---------- loading ----------
 
@@ -249,6 +262,78 @@ export function Aviator() {
     }
   }
 
+  /** Delete a run's record (log, plan, report); its branch and changes stay in your repo. */
+  async function deleteRun(id: string): Promise<boolean> {
+    const r = runs.find((x) => x.id === id);
+    const live = r && !FINAL.includes(r.status);
+    if (
+      !window.confirm(
+        `Delete "${r?.title ?? "this run"}"?${live ? "\n\nIt's still running and will be stopped." : ""}\n\nIts log, plan and report are removed. The branch and any changes the agents made stay in your repo.`,
+      )
+    ) {
+      return false;
+    }
+    try {
+      await api(`/api/runs/${id}`, { method: "DELETE" });
+      setRuns((prev) => prev.filter((x) => x.id !== id));
+      if (id === runId) selectRun(null);
+      return true;
+    } catch (err) {
+      return fail(err);
+    }
+  }
+
+  async function deleteChat(id: string) {
+    const c = chats.find((x) => x.id === id);
+    if (!window.confirm(`Delete the chat "${c?.title ?? "this chat"}"?${c?.busy ? "\n\nClaude is still working and will be stopped." : ""}\n\nIts history is removed; changes Claude made to your files stay.`)) {
+      return;
+    }
+    try {
+      await api(`/api/chats/${id}`, { method: "DELETE" });
+      setChats((prev) => prev.filter((x) => x.id !== id));
+      if (id === chatId) openChat(null);
+    } catch (err) {
+      fail(err);
+    }
+  }
+
+  async function continueRun(id = runId, note = continueNote): Promise<boolean> {
+    if (!id) return false;
+    stickToBottom.current = true;
+    setAutoContinue(null);
+    setContinuing(id);
+    try {
+      await api(`/api/runs/${id}/continue`, { method: "POST", json: { note } });
+      setContinueNote("");
+      void loadRuns();
+      void refreshStatus();
+      return true;
+    } catch (err) {
+      setContinuing(null);
+      return fail(err);
+    } finally {
+      // Once the run's own status events arrive they decide whether the card shows again.
+      setTimeout(() => setContinuing((cur) => (cur === id ? null : cur)), 5000);
+    }
+  }
+
+  // Re-render when the limit resets so the Continue button turns on.
+  useEffect(() => {
+    if (!limitUntil) return;
+    const t = setTimeout(() => setNow(Date.now()), Math.max(0, limitUntil - Date.now()) + 1000);
+    return () => clearTimeout(t);
+  }, [limitUntil]);
+
+  // Auto-continue fires a minute after the reset time, if the run is still the one waiting.
+  useEffect(() => {
+    if (!autoContinue || !resetMs) return;
+    const t = setTimeout(() => {
+      if (autoContinue === runId) void continueRun(autoContinue);
+    }, Math.max(0, resetMs - Date.now()) + 60_000);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoContinue, resetMs, runId, continueNote]);
+
   async function openFolder(path: string, how: "folder" | "editor") {
     try {
       await api("/api/open", { method: "POST", json: { path, how } });
@@ -310,6 +395,12 @@ export function Aviator() {
       case "/chat":
         openChat(null);
         return true;
+      case "/continue":
+        if (!canContinue) return fail(new Error("Open a stopped run that has a branch to continue it."));
+        return continueRun();
+      case "/delete":
+        if (!runId) return fail(new Error("Open a run first, or use the × next to it in the sidebar."));
+        return deleteRun(runId);
       case "/help":
         setShowHelp(true);
         return true;
@@ -325,6 +416,9 @@ export function Aviator() {
     // After an uncommitted-changes failure, "stash" or "worktree" picks that fix.
     if (dirtyRepo && /\bstash\b/i.test(text)) return retry("stash");
     if (dirtyRepo && /\bwork ?tree\b/i.test(text)) return retry("worktree");
+    // "continue", optionally followed by a note for the agents: "continue, I fixed the import myself".
+    const cont = canContinue && text.match(/^\s*(continue|resume|go on|carry on)\b[\s.,:;!-]*([\s\S]*)$/i);
+    if (cont) return continueRun(runId, [continueNote, cont[2]].filter((t) => t.trim()).join("\n\n"));
     if (active && runId) {
       try {
         await api(`/api/runs/${runId}/message`, { method: "POST", json: { text, images } });
@@ -403,6 +497,8 @@ export function Aviator() {
           composer.current?.focus();
         }}
         onPickRun={selectRun}
+        onDeleteRun={(id) => void deleteRun(id)}
+        onDeleteChat={(id) => void deleteChat(id)}
         onSignIn={() => setSigningIn(true)}
         onAgents={() => openPage("agents")}
         onConnections={() => openPage("connections")}
@@ -548,7 +644,50 @@ export function Aviator() {
               />
             )}
 
-            {!page && dirtyRepo && (
+            {!page && canContinue && run && (
+            <div className="card accent">
+              <h3>Continue this run</h3>
+              <div className="muted">
+                Picks up on branch <code>{run.repos[0].branch}</code> where it stopped: finished research and the approved plan are
+                reused, builders continue their own sessions, then testing and the report run again.
+              </div>
+              {limitUntil && (
+                <div className="warn" style={{ marginTop: 8 }}>
+                  Your plan&apos;s usage limit resets{" "}
+                  {new Date(limitUntil).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}. Continue
+                  works after that.
+                </div>
+              )}
+              <textarea
+                className="continue-note"
+                value={continueNote}
+                onChange={(e) => setContinueNote(e.target.value)}
+                rows={3}
+                placeholder="Optional: tell the agents what changed since it stopped, e.g. “I fixed the DevPanel import myself, don't redo it” or “also handle empty uploads”."
+                aria-label="Note for the agents"
+              />
+              <div className="actions">
+                <button className="btn solid" onClick={() => void continueRun()} disabled={!!limitUntil}>
+                  Continue
+                </button>
+                {limitUntil && (
+                  <label className="muted" style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <input
+                      type="checkbox"
+                      checked={autoContinue === runId}
+                      onChange={(e) => setAutoContinue(e.target.checked ? runId : null)}
+                    />
+                    Continue automatically when it resets (keep this page open)
+                  </label>
+                )}
+              </div>
+              <div className="faint" style={{ marginTop: 8, fontSize: 12 }}>
+                You can also type <code>continue</code> below, optionally followed by your note.
+              </div>
+            </div>
+          )}
+
+          {!page && dirtyRepo && (
               <div className="card amber">
                 <h3 className="warn">Your repo has uncommitted changes</h3>
                 <div className="muted">

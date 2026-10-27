@@ -354,7 +354,7 @@ export function AgentsPage({ onSaved }: { onSaved: (settings: AgentSettings) => 
             <th>Agent</th>
             <th>Model</th>
             <th>Effort</th>
-            <th>Max turns</th>
+            <th title="How many steps the agent may take in one go. A step is one Claude reply plus the tools it calls (reading a file, running a command…). When it reaches the limit it stops where it is, so raise it if an agent keeps stopping before it finishes." style={{ cursor: "help" }}>Max turns ⓘ</th>
             <th>Thinking</th>
             <th>Prompt</th>
           </tr>

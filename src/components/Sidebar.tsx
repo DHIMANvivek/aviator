@@ -14,6 +14,7 @@ type Props = {
   onNewProject: () => void;
   onNewTask: () => void;
   onPickRun: (id: string) => void;
+  onDeleteRun: (id: string) => void;
   onSignIn: () => void;
   onAgents: () => void;
   onConnections: () => void;
@@ -21,6 +22,7 @@ type Props = {
   selectedChatId: string | null;
   /** Open the general chat page: one chat, or null for a new one. */
   onChat: (id: string | null) => void;
+  onDeleteChat: (id: string) => void;
   page: "agents" | "connections" | "chat" | null;
 };
 
@@ -78,19 +80,23 @@ export function Sidebar(p: Props) {
           <div className="runs">
             {chats.length === 0 && <div className="faint" style={{ padding: "0 10px" }}>No chats yet</div>}
             {chats.map((c) => (
-              <button
-                key={c.id}
-                className={`run-item ${c.id === p.selectedChatId ? "active" : ""}`}
-                onClick={() => p.onChat(c.id)}
-                title={c.title}
-              >
-                <span className={`glyph ${c.busy ? "running" : "done"}`}>{c.busy ? "●" : "✦"}</span>
-                <span className="run-title">{c.title}</span>
-                <span className="run-meta">
-                  {ago(c.updatedAt)}
-                  {c.tokens ? ` · ${tokens(c.tokens)} tokens` : ""}
-                </span>
-              </button>
+              <div className="run-row" key={c.id}>
+                <button
+                  className={`run-item ${c.id === p.selectedChatId ? "active" : ""}`}
+                  onClick={() => p.onChat(c.id)}
+                  title={c.title}
+                >
+                  <span className={`glyph ${c.busy ? "running" : "done"}`}>{c.busy ? "●" : "✦"}</span>
+                  <span className="run-title">{c.title}</span>
+                  <span className="run-meta">
+                    {ago(c.updatedAt)}
+                    {c.tokens ? ` · ${tokens(c.tokens)} tokens` : ""}
+                  </span>
+                </button>
+                <button className="run-delete" onClick={() => p.onDeleteChat(c.id)} title="Delete this chat" aria-label={`Delete chat ${c.title}`}>
+                  ×
+                </button>
+              </div>
             ))}
           </div>
         </>
@@ -102,19 +108,23 @@ export function Sidebar(p: Props) {
             {runs.map((r) => {
               const g = STATUS_GLYPH[r.status];
               return (
-                <button
-                  key={r.id}
-                  className={`run-item ${r.id === p.selectedRunId ? "active" : ""}`}
-                  onClick={() => p.onPickRun(r.id)}
-                  title={`${r.title} · ${g.label}`}
-                >
-                  <span className={`glyph ${g.cls}`}>{g.glyph}</span>
-                  <span className="run-title">{r.title}</span>
-                  <span className="run-meta">
-                    {ago(r.createdAt)} · {g.label}
-                    {r.tokens ? ` · ${tokens(r.tokens)} tokens` : ""}
-                  </span>
-                </button>
+                <div className="run-row" key={r.id}>
+                  <button
+                    className={`run-item ${r.id === p.selectedRunId ? "active" : ""}`}
+                    onClick={() => p.onPickRun(r.id)}
+                    title={`${r.title} · ${g.label}`}
+                  >
+                    <span className={`glyph ${g.cls}`}>{g.glyph}</span>
+                    <span className="run-title">{r.title}</span>
+                    <span className="run-meta">
+                      {ago(r.createdAt)} · {g.label}
+                      {r.tokens ? ` · ${tokens(r.tokens)} tokens` : ""}
+                    </span>
+                  </button>
+                  <button className="run-delete" onClick={() => p.onDeleteRun(r.id)} title="Delete this run" aria-label={`Delete run ${r.title}`}>
+                    ×
+                  </button>
+                </div>
               );
             })}
           </div>

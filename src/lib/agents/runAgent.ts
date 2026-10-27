@@ -22,10 +22,22 @@ export type AgentHost = {
   abort: AbortController;
   emit: (actor: Actor, body: EventBody) => void;
   setAgent: (agent: string, patch: Partial<AgentState>) => void;
-  addUsage: (agent: string, tokens: number, turns: number) => void;
+  /** `cached` is the part of `tokens` that was context re-read from Claude's prompt cache. */
+  addUsage: (agent: string, tokens: number, turns: number, cached?: number) => void;
   planUsage: (usage: PlanUsage) => void;
   /** End the whole run with a reason shown to the developer. */
   stop: (reason: string) => void;
+};
+
+/**
+ * Limits that keep each step small. Every step re-sends the agent's whole conversation, so a
+ * long command output or an ever-growing context is paid for again and again.
+ */
+const CONTEXT_LIMITS = {
+  /** Command output kept inline; the rest is saved to a file the agent can read if needed. */
+  bashOutputMaxChars: 12_000,
+  /** Summarize (compact) the conversation once it grows past this many tokens. */
+  autoCompactWindow: 160_000,
 };
 
 /** Notices Claude sends when it starts drawing on paid extra usage or credits. */
@@ -264,7 +276,6 @@ export async function runAgent(host: AgentHost, req: PreparedRequest): Promise<A
   let structured: unknown;
   let isError = false;
   const errors: string[] = [];
-  let lastTokens = 0;
   let lastTurns = 0;
   const toolNames = new Map<string, string>();
 
@@ -285,6 +296,8 @@ export async function runAgent(host: AgentHost, req: PreparedRequest): Promise<A
         // Loads the repo's CLAUDE.md so agents follow the project's own conventions; the
         // general chat also loads your own Claude Code settings, like the CLI does.
         settingSources: req.unguarded ? ["user", "project", "local"] : ["project"],
+        // The general chat behaves like the CLI; pipeline agents get Aviator's context limits.
+        settings: req.unguarded ? undefined : CONTEXT_LIMITS,
         mcpServers,
         ...(req.unguarded
           ? { permissionMode: "bypassPermissions" as const, allowDangerouslySkipPermissions: true }
@@ -367,7 +380,7 @@ export async function runAgent(host: AgentHost, req: PreparedRequest): Promise<A
         host.planUsage(usage);
         if (usage.usingExtraUsage) host.stop(EXTRA_USAGE_STOP);
         else if (usage.status === "rejected") {
-          host.stop("Your Claude plan's usage limit is reached. Start the task again after it resets.");
+          host.stop("Your Claude plan's usage limit is reached. Press Continue after it resets to pick up where this stopped.");
         }
         continue;
       }
@@ -419,14 +432,13 @@ export async function runAgent(host: AgentHost, req: PreparedRequest): Promise<A
       }
 
       if (msg.type === "result") {
-        // Token and turn counts are cumulative for the session; record the increase.
+        // With streaming input, `usage` covers just the turn this result ends (not a running
+        // total), so each result adds its own. Turn counts are cumulative; record the increase.
         const u = msg.usage;
-        const total = u.input_tokens + u.output_tokens + u.cache_creation_input_tokens + u.cache_read_input_tokens;
-        const tokens = Math.max(0, total - lastTokens);
+        const tokens = u.input_tokens + u.output_tokens + u.cache_creation_input_tokens + u.cache_read_input_tokens;
         const turns = Math.max(0, msg.num_turns - lastTurns);
-        lastTokens = total;
         lastTurns = msg.num_turns;
-        host.addUsage(agent, tokens, turns);
+        host.addUsage(agent, tokens, turns, u.cache_read_input_tokens);
 
         if (msg.subtype === "success") {
           text = msg.result;

@@ -1,5 +1,5 @@
 import { startChat } from "@/lib/agents/chat";
-import { getLive } from "@/lib/runtime";
+import { getLive, settleChat } from "@/lib/runtime";
 import { checkImages, listChats } from "@/lib/store";
 import type { ChatSummary } from "@/lib/types";
 
@@ -8,17 +8,19 @@ export const runtime = "nodejs";
 
 export function GET() {
   return Response.json(
-    listChats().map(
-      ({ id, projectId, title, createdAt, updatedAt, tokens }): ChatSummary => ({
-        id,
-        projectId,
-        title,
-        createdAt,
-        updatedAt,
-        tokens,
-        busy: !!getLive(id),
-      }),
-    ),
+    listChats()
+      .map(settleChat)
+      .map(
+        ({ id, projectId, title, createdAt, updatedAt, tokens }): ChatSummary => ({
+          id,
+          projectId,
+          title,
+          createdAt,
+          updatedAt,
+          tokens,
+          busy: !!getLive(id),
+        }),
+      ),
   );
 }
 

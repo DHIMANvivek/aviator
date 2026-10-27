@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { ACTIVE_STATUSES, AGENTS, type AgentName, type AgentState, type Chat, type ImageInput, type Project, type Run } from "./types";
+import { AGENTS, type AgentName, type AgentState, type Chat, type ImageInput, type Project, type Run } from "./types";
 
 // Plain JSON files: easy to inspect, back up, or delete by hand.
 //   .aviator/projects.json
@@ -76,24 +76,38 @@ export function getRun(runId: string): Run | undefined {
   return readJson<Run | undefined>(path.join(runDir(runId), "run.json"), undefined);
 }
 
+/** Parsed run files by id; the sidebar lists runs every few seconds, so only changed files are re-read. */
+const runCache = new Map<string, { mtimeMs: number; run: Run }>();
+
 export function listRuns(): Run[] {
   const dir = path.join(dataDir, "runs");
   if (!fs.existsSync(dir)) return [];
-  return fs
-    .readdirSync(dir)
-    .map((id) => getRun(id))
+  const ids = fs.readdirSync(dir);
+  for (const id of runCache.keys()) if (!ids.includes(id)) runCache.delete(id);
+  return ids
+    .map((id) => {
+      let mtimeMs: number;
+      try {
+        mtimeMs = fs.statSync(path.join(runDir(id), "run.json")).mtimeMs;
+      } catch {
+        return undefined;
+      }
+      const cached = runCache.get(id);
+      if (cached?.mtimeMs === mtimeMs) return cached.run;
+      const run = getRun(id);
+      if (run) runCache.set(id, { mtimeMs, run });
+      return run;
+    })
     .filter((r): r is Run => !!r)
     .sort((a, b) => b.createdAt - a.createdAt);
 }
 
-/** A run marked active on disk but with no live pipeline was cut off by a server restart. */
-export function markOrphaned(run: Run, isLive: boolean): Run {
-  if (!isLive && ACTIVE_STATUSES.includes(run.status)) {
-    run.status = "failed";
-    run.error = "Aviator restarted while this run was in progress.";
-    saveRun(run);
-  }
-  return run;
+/**
+ * Delete a run's record: its log, plan, report and screenshots. The branch (and worktree, if
+ * any) with the agents' changes is left alone; that's your code.
+ */
+export function deleteRun(runId: string) {
+  if (/^run_[a-f0-9]+$/.test(runId)) fs.rmSync(runDir(runId), { recursive: true, force: true });
 }
 
 // ---------- general chats ----------
@@ -130,6 +144,14 @@ export function deleteChat(chatId: string) {
 export function writeRunFile(runId: string, name: string, content: string) {
   fs.mkdirSync(runDir(runId), { recursive: true });
   fs.writeFileSync(path.join(runDir(runId), name), content);
+}
+
+export function readRunFile(runId: string, name: string): string | undefined {
+  try {
+    return fs.readFileSync(path.join(runDir(runId), name), "utf8");
+  } catch {
+    return undefined;
+  }
 }
 
 // ---------- screenshots attached in the chat box ----------
@@ -176,4 +198,12 @@ export function readRunImage(runId: string, name: string): { data: Buffer; type:
   const ext = name.split(".").pop()!;
   const type = Object.entries(IMAGE_EXT).find(([, e]) => e === ext)?.[0] ?? "application/octet-stream";
   return { data: fs.readFileSync(file), type };
+}
+
+/** Saved screenshots back as image input, e.g. for agents of a continued run. */
+export function loadRunImages(runId: string, names: string[]): ImageInput[] {
+  return names
+    .map((name) => ({ name, img: readRunImage(runId, name) }))
+    .filter((x): x is { name: string; img: { data: Buffer; type: string } } => !!x.img)
+    .map(({ name, img }) => ({ mediaType: img.type as ImageInput["mediaType"], data: img.data.toString("base64"), name }));
 }
