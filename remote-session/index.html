@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Aviator remote workspace</title><script src="/app.js" defer></script></head>
+<body><main>
+<h1>Aviator remote workspace</h1>
+<p>Your project and commands stay on your connected device. Requested file contents and command output pass through the host to Claude.</p>
+<form id="login"><label>Private access code <input id="token" type="password" required autocomplete="off"></label><button>Sign in</button></form>
+<p id="status" role="status">Sign in to connect.</p>
+<section id="workspace" hidden>
+<p>Keep your workspace connector open. Approve file writes and commands in its terminal.</p>
+<form id="task"><label for="prompt">Coding task</label><br><textarea id="prompt" rows="8" cols="70" maxlength="32000" required></textarea><br><button id="submit">Run task</button></form>
+<button id="cancel">Cancel task</button> <button id="logout">Sign out</button>
+<pre id="output" aria-live="polite"></pre>
+</section></main></body></html>

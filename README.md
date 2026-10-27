@@ -69,6 +69,13 @@ Works on macOS, Windows and Linux (Node 20+, git).
   guarded by the same safety rules). `npm run demo` works in cmd and PowerShell.
 - **Linux**: the right Claude Code build (glibc or musl) is picked automatically.
 
+## Shared host login with projects on developer devices
+
+The experimental `npm run share` portal keeps your saved Claude Pro/Max login on the host and
+routes project tools to a connector on each developer's device. It requires no API key.
+See [remote-session setup and limitations](remote-session/README.md) for invitations, ngrok,
+local command approvals, and the distinction between host orchestration and device execution.
+
 ## One address for everyone: the hub
 
 Each person runs Aviator on their own computer; a small hub server gives everyone the same link

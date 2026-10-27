@@ -144,9 +144,12 @@ function clientIp(req) {
   return String(req.socket.remoteAddress || "").replace(/^::ffff:/, "");
 }
 
+// Tunnels and TLS proxies (ngrok, Fly) serve https:// but reach the hub over plain http, adding
+// X-Forwarded-Proto. Trusting it without HUB_TRUST_PROXY is fine: it only picks the cookie's
+// Secure flag and the address shown in the pairing command.
 function isHttps(req) {
   if (PUBLIC_URL) return PUBLIC_URL.startsWith("https:");
-  if (TRUST_PROXY && req.headers["x-forwarded-proto"]) return String(req.headers["x-forwarded-proto"]).startsWith("https");
+  if (req.headers["x-forwarded-proto"]) return String(req.headers["x-forwarded-proto"]).split(",")[0].trim() === "https";
   return !!req.socket.encrypted;
 }
 
@@ -157,12 +160,18 @@ function ownOrigin(req) {
   return `${isHttps(req) ? "https" : "http"}://${host}`;
 }
 
-/** Browsers send simple cross-site POSTs without asking first, so changes must come from our own page. */
+/**
+ * Browsers send simple cross-site POSTs without asking first, so changes must come from our own
+ * page. Compares host names only (like src/proxy.ts): behind a tunnel the scheme the hub sees
+ * isn't the one the browser used, and another site can't put our host name in its Origin.
+ */
 function sameOrigin(req) {
   const origin = req.headers.origin;
   if (!origin) return req.headers["sec-fetch-site"] !== "cross-site";
   try {
-    return new URL(origin).origin === ownOrigin(req);
+    const host = new URL(origin).host.toLowerCase();
+    const own = [PUBLIC_URL && new URL(PUBLIC_URL).host, req.headers["x-forwarded-host"], req.headers.host];
+    return own.some((h) => h && String(h).toLowerCase() === host);
   } catch {
     return false;
   }
@@ -657,6 +666,60 @@ async function handle(req, res) {
   }
   if (target.runner) return offlinePage(res, auth, target.runner);
   return redirect(res, "/_hub/computers");
+}
+
+// ---------- admin commands (run on the hub's machine instead of starting it) ----------
+//   npm run hub -- users                      list accounts and their computers
+//   npm run hub -- reset-password <email>     set a new random password and sign that account out everywhere
+//   npm run hub -- sign-out <email>           sign that account out on every device (password unchanged)
+//   npm run hub -- delete-user <email>        remove an account, its sessions and its computers
+
+const [command, commandArg] = process.argv.slice(2);
+if (command === "users") {
+  for (const user of db.prepare("SELECT * FROM users ORDER BY created_at").all()) {
+    const computers = q.runnersOf.all(user.id).map((r) => r.name);
+    console.log(`${user.email}  (since ${new Date(user.created_at).toLocaleString()})${computers.length ? `  computers: ${computers.join(", ")}` : ""}`);
+  }
+  process.exit(0);
+}
+if (command === "reset-password") {
+  const user = q.userByEmail.get(String(commandArg ?? "").trim().toLowerCase());
+  if (!user) {
+    console.error(`[hub] No account for “${commandArg ?? ""}”. See them all with: npm run hub -- users`);
+    process.exit(1);
+  }
+  const password = crypto.randomBytes(9).toString("base64url");
+  db.prepare("UPDATE users SET password = ? WHERE id = ?").run(await hashPassword(password), user.id);
+  db.prepare("DELETE FROM sessions WHERE user_id = ?").run(user.id);
+  console.log(`[hub] New password for ${user.email}: ${password}\n[hub] Every device it was signed in on is signed out. Its computers stay linked.`);
+  process.exit(0);
+}
+// Both work while the hub runs: every request checks the session in the database, so the person
+// loses access at once (and, when deleted, their computer's next reconnect is refused).
+if (command === "sign-out") {
+  const user = q.userByEmail.get(String(commandArg ?? "").trim().toLowerCase());
+  if (!user) {
+    console.error(`[hub] No account for “${commandArg ?? ""}”. See them all with: npm run hub -- users`);
+    process.exit(1);
+  }
+  const { changes } = db.prepare("DELETE FROM sessions WHERE user_id = ?").run(user.id);
+  console.log(`[hub] Signed ${user.email} out of ${changes} device${changes === 1 ? "" : "s"}. They can sign in again with their password.`);
+  process.exit(0);
+}
+if (command === "delete-user") {
+  const user = q.userByEmail.get(String(commandArg ?? "").trim().toLowerCase());
+  if (!user) {
+    console.error(`[hub] No account for “${commandArg ?? ""}”. See them all with: npm run hub -- users`);
+    process.exit(1);
+  }
+  for (const table of ["sessions", "pair_codes", "runners"]) db.prepare(`DELETE FROM ${table} WHERE user_id = ?`).run(user.id);
+  db.prepare("DELETE FROM users WHERE id = ?").run(user.id);
+  console.log(`[hub] Deleted ${user.email}: signed out everywhere, and its computers are unlinked. Nothing on those computers is touched.`);
+  process.exit(0);
+}
+if (command) {
+  console.error(`[hub] Unknown command “${command}”. Commands: users, sign-out <email>, reset-password <email>, delete-user <email>. With none, the hub starts.`);
+  process.exit(1);
 }
 
 const server = http.createServer((req, res) => {
