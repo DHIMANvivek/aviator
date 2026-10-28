@@ -21,6 +21,8 @@ type Props = {
   agent: CustomAgent;
   isNew: boolean;
   models: ModelOption[];
+  /** What the plan default stands for, e.g. "Opus 5.5". */
+  defaultModel?: string;
   connections: Connection[];
   history: PromptVersion[];
   saving: boolean;
@@ -29,7 +31,7 @@ type Props = {
   onDelete?: () => void;
 };
 
-export function CustomAgentEditor({ agent, isNew, models, connections, history, saving, onSave, onCancel, onDelete }: Props) {
+export function CustomAgentEditor({ agent, isNew, models, defaultModel, connections, history, saving, onSave, onCancel, onDelete }: Props) {
   const [a, setA] = useState<CustomAgent>(agent);
   const [conns, setConns] = useState<string[]>(
     connections.filter((c) => c.agents.includes(agent.id) || c.tools.some((t) => t.agents.includes(agent.id))).map((c) => c.id),
@@ -130,7 +132,7 @@ export function CustomAgentEditor({ agent, isNew, models, connections, history, 
         <div className="field">
           <label>Model</label>
           <select value={a.config.model} onChange={(e) => setConfig({ model: e.target.value })}>
-            <option value="">Plan default</option>
+            <option value="">{defaultModel ? `Plan default (${defaultModel})` : "Plan default"}</option>
             {models.map((m) => (
               <option key={m.value} value={m.value}>
                 {m.label}

@@ -97,7 +97,14 @@ export const DEFAULT_MAX_TURNS: Record<AgentName, number> = {
   reporter: 30,
 };
 
-export type Preset = { id: string; name: string; description: string; effort: Record<AgentName, Effort> };
+export type Preset = {
+  id: string;
+  name: string;
+  description: string;
+  effort: Record<AgentName, Effort>;
+  /** Models this preset picks; agents it leaves out keep the model you chose. */
+  model?: Partial<Record<AgentName, string>>;
+};
 
 export const PRESETS: Preset[] = [
   {
@@ -109,8 +116,9 @@ export const PRESETS: Preset[] = [
   {
     id: "save-usage",
     name: "Save usage",
-    description: "Uses the least of your plan. Fine for small, clear tasks.",
+    description: "Uses the least of your plan: Sonnet for the work, Haiku for the report. Fine for small, clear tasks.",
     effort: { researcher: "medium", planner: "high", backend: "low", frontend: "low", qa: "medium", reporter: "low" },
+    model: { researcher: "sonnet", planner: "sonnet", backend: "sonnet", frontend: "sonnet", qa: "sonnet", reporter: "haiku" },
   },
   {
     id: "max-quality",
@@ -125,7 +133,7 @@ export function presetAgents(preset: Preset, base?: Record<AgentName, AgentConfi
     AGENTS.map((a) => [
       a,
       {
-        model: base?.[a].model ?? "",
+        model: preset.model?.[a] ?? base?.[a].model ?? "",
         effort: preset.effort[a],
         maxTurns: base?.[a].maxTurns ?? DEFAULT_MAX_TURNS[a],
         showThinking: base?.[a].showThinking ?? true,

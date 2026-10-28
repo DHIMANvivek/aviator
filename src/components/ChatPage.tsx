@@ -29,7 +29,17 @@ function lastOptions(): ChatOptions {
   }
 }
 
-function ChatTools({ options, models, onChange }: { options: ChatOptions; models: ModelOption[]; onChange: (o: ChatOptions) => void }) {
+function ChatTools({
+  options,
+  models,
+  defaultModel,
+  onChange,
+}: {
+  options: ChatOptions;
+  models: ModelOption[];
+  defaultModel?: string;
+  onChange: (o: ChatOptions) => void;
+}) {
   const set = (patch: Partial<ChatOptions>) => onChange({ ...options, ...patch });
   const efforts = models.find((m) => m.value === options.model)?.efforts ?? EFFORTS;
   return (
@@ -44,7 +54,7 @@ function ChatTools({ options, models, onChange }: { options: ChatOptions; models
       </div>
       <span className="spacer" />
       <select value={options.model} onChange={(e) => set({ model: e.target.value })} aria-label="Model">
-        <option value="">Plan default</option>
+        <option value="">{defaultModel ? `Plan default (${defaultModel})` : "Plan default"}</option>
         {models.map((m) => (
           <option key={m.value} value={m.value} title={m.description}>
             {m.label}
@@ -88,6 +98,7 @@ export function ChatPage({ project, chatId, onOpen, onChanged, onOpenConnections
   const [now, setNow] = useState(() => Date.now());
   const [options, setOptions] = useState<ChatOptions>(DEFAULT_CHAT_OPTIONS);
   const [models, setModels] = useState<ModelOption[]>([]);
+  const [defaultModel, setDefaultModel] = useState<string>();
   const [skills, setSkills] = useState<SkillOption[] | null>(null);
   const [skillsError, setSkillsError] = useState("");
   const [connections, setConnections] = useState<Connection[]>([]);
@@ -100,8 +111,11 @@ export function ChatPage({ project, chatId, onOpen, onChanged, onOpenConnections
   const busy = agent ? agent.status === "running" : !!chat?.busy;
 
   useEffect(() => {
-    api<{ models: ModelOption[] }>("/api/models")
-      .then((r) => setModels(r.models))
+    api<{ models: ModelOption[]; defaultModel?: string }>("/api/models")
+      .then((r) => {
+        setModels(r.models);
+        setDefaultModel(r.defaultModel);
+      })
       .catch(() => {});
     api<{ connections: Connection[] }>("/api/connections")
       .then((r) => setConnections(r.connections.filter((c) => c.enabled)))
@@ -395,7 +409,7 @@ export function ChatPage({ project, chatId, onOpen, onChanged, onOpenConnections
         menu={menu}
         onSubmit={submit}
         onCancel={cancel}
-        toolbar={<ChatTools options={options} models={models} onChange={changeOptions} />}
+        toolbar={<ChatTools options={options} models={models} defaultModel={defaultModel} onChange={changeOptions} />}
       />
     </main>
   );

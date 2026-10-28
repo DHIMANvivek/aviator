@@ -5,7 +5,7 @@ export const runtime = "nodejs";
 
 export async function GET() {
   try {
-    return Response.json({ models: await listModels() });
+    return Response.json(await listModels());
   } catch (err) {
     return Response.json({ models: [], error: err instanceof Error ? err.message : String(err) });
   }

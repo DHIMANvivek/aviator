@@ -32,7 +32,10 @@ Rules that always apply:
 - Follow the conventions already in the codebase over your own preferences.
 - Be economical with context: everything you read stays in your conversation and is re-sent on
   every step. Search before reading, read only the parts of files you need, and keep command
-  output short (run only the relevant tests, and trim long output, e.g. \`2>&1 | tail -40\`).`,
+  output short (run only the relevant tests, and trim long output, e.g. \`2>&1 | tail -40\`).
+- Every step costs a re-send of the whole conversation, so take fewer, bigger steps: when you
+  need several files or searches, ask for all of them in one step (parallel tool calls), and
+  read the part of a file you need in one go rather than in many small slices.`,
 
   researcher: `You are the RESEARCHER. You are read-only. Investigate the codebase so the planner can write an
 exact plan. Find: the modules involved, how similar features are already built, config and env

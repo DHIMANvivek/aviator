@@ -13,11 +13,17 @@ export type ModelOption = {
   efforts?: Effort[];
 };
 
-let cached: { at: number; models: ModelOption[] } | undefined;
+let cached: { at: number; list: ModelList } | undefined;
 const CACHE_MS = 10 * 60_000;
 
-export async function listModels(): Promise<ModelOption[]> {
-  if (cached && Date.now() - cached.at < CACHE_MS) return cached.models;
+export type ModelList = {
+  models: ModelOption[];
+  /** The model your plan's default stands for, e.g. "Opus 5.5". */
+  defaultModel?: string;
+};
+
+export async function listModels(): Promise<ModelList> {
+  if (cached && Date.now() - cached.at < CACHE_MS) return cached.list;
   let close: (() => void) | undefined;
   const idle: AsyncIterable<SDKUserMessage> = {
     [Symbol.asyncIterator]: () => ({
@@ -37,8 +43,11 @@ export async function listModels(): Promise<ModelOption[]> {
       description: m.description,
       efforts: m.supportsEffort === false ? [] : m.supportedEffortLevels,
     }));
-    cached = { at: Date.now(), models };
-    return models;
+    // Its description starts with the model it stands for: "Opus 5.5 · Best for …".
+    const fallback = list.find((m) => m.value === "default");
+    const defaultModel = fallback?.description.split("·")[0].trim() || undefined;
+    cached = { at: Date.now(), list: { models, defaultModel } };
+    return cached.list;
   } finally {
     close?.();
     q.close();

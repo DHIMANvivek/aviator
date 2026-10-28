@@ -570,12 +570,16 @@ function baselineMarkdown(run: Run): string {
   ].join("\n");
 }
 
-function builderPrompt(agent: BuilderName, run: Run, plan: PlanOutput, ws: Workspace): string {
+function builderPrompt(agent: BuilderName, run: Run, plan: PlanOutput, research: ResearchOutput, ws: Workspace): string {
   const task = agent === "backend" ? plan.backendTask : plan.frontendTask;
   return [
     `# Your task (${agent})\n${task}`,
     `## Contract shared with the other builder\n${plan.contractMd}`,
     `## Overall plan, for context\n${plan.planMd}`,
+    // The researcher already found the code; without this each builder surveys it again.
+    `## What the researcher already found\nThe code for this task is already located. Open the files named here and in the plan directly instead of surveying the codebase again.\n\n${research.summary}${
+      research.relevantFiles.length ? `\n\nRelevant files:\n${research.relevantFiles.map((f) => `- ${f}`).join("\n")}` : ""
+    }`,
     plan.acceptanceCriteria.length ? `## Acceptance criteria\n${plan.acceptanceCriteria.map((c) => `- ${c}`).join("\n")}` : "",
     `## Checks\n${checksMarkdown(ws)}\n\nWhile you work, run the ones for your own area (${agent}). Aviator runs all of them itself before QA, so you don't need to run the other builder's.`,
     baselineMarkdown(run),
@@ -911,7 +915,7 @@ async function execute(ctx: RunContext, input: StartRunInput, resumeFrom?: Stage
       const scope = ws.scopes[b]!;
       return {
         agent: b,
-        prompt: builderPrompt(b, run, plan, ws),
+        prompt: builderPrompt(b, run, plan, research, ws),
         images: input.images,
         cwd: scope.cwd,
         additionalDirectories: scope.additional,

@@ -140,6 +140,7 @@ export function AgentsPage({ onSaved }: { onSaved: (settings: AgentSettings) => 
   const [data, setData] = useState<Loaded | null>(null);
   const [draft, setDraft] = useState<Record<AgentName, AgentConfig> | null>(null);
   const [models, setModels] = useState<ModelOption[] | null>(null);
+  const [defaultModel, setDefaultModel] = useState<string>();
   const [modelsError, setModelsError] = useState("");
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
@@ -160,9 +161,10 @@ export function AgentsPage({ onSaved }: { onSaved: (settings: AgentSettings) => 
     api<{ connections: Connection[] }>("/api/connections")
       .then((r) => setConnections(r.connections))
       .catch(() => {});
-    api<{ models: ModelOption[]; error?: string }>("/api/models")
+    api<{ models: ModelOption[]; defaultModel?: string; error?: string }>("/api/models")
       .then((r) => {
         setModels(r.models);
+        setDefaultModel(r.defaultModel);
         if (r.error) setModelsError(r.error);
       })
       .catch((e: Error) => setModelsError(e.message));
@@ -296,7 +298,7 @@ export function AgentsPage({ onSaved }: { onSaved: (settings: AgentSettings) => 
     const known = current === "" || list.some((m) => m.value === current);
     return (
       <>
-        <option value="">Plan default</option>
+        <option value="">{defaultModel ? `Plan default (${defaultModel})` : "Plan default"}</option>
         {list.map((m) => (
           <option key={m.value} value={m.value} title={m.description}>
             {m.label}
@@ -344,8 +346,8 @@ export function AgentsPage({ onSaved }: { onSaved: (settings: AgentSettings) => 
         </button>
       </div>
       <div className="help muted" style={{ margin: "6px 0 14px", fontSize: 12 }}>
-        {PRESETS.find((p) => p.id === preset)?.description ?? "Your own mix of settings."} Presets set effort; your model and
-        turn choices are kept. Higher effort uses more of your plan.
+        {PRESETS.find((p) => p.id === preset)?.description ?? "Your own mix of settings."} Presets set effort (Save usage also
+        picks the models); your other choices are kept. Higher effort and bigger models use more of your plan.
       </div>
 
       <table className="table agents-table">
@@ -536,6 +538,7 @@ export function AgentsPage({ onSaved }: { onSaved: (settings: AgentSettings) => 
             agent={customEdit.agent}
             isNew={customEdit.isNew}
             models={models ?? []}
+            defaultModel={defaultModel}
             connections={connections}
             history={settings.history.filter((v) => v.target === `custom:${customEdit.agent.id}`)}
             saving={saving}
